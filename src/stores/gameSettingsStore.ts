@@ -1,8 +1,9 @@
 // src/stores/gameSettingsStore.ts
 import { create } from 'zustand';
-import type { UnitData } from '@/types/unit';
+import type { UnitData, UnitClassificationType } from '@/types/unit'; // UnitClassificationType をインポート
 import type { MapData, StrategicPoint } from '@/types/map';
-import { UNITS_MAP } from '@/gameData/units'; // UNITS_MAP をインポート
+import { UNITS_MAP } from '@/gameData/units';
+import { randomizeMapTerrain } from '@/lib/mapGenerator'; // ★★★ 地形生成関数をインポート ★★★
 
 // AI難易度の型
 export type AiDifficulty = 'easy' | 'normal' | 'hard' | 'very_hard';
@@ -30,7 +31,7 @@ export type UnitStatus =
   | 'attacking_ap'
   | 'reloading_he'
   | 'reloading_ap'
-  | 'producing' // 生産中 (司令官ユニット用だが、現在はproductionQueueで管理)
+  | 'producing'
   | 'destroyed';
 
 // ゲームプレイ中にマップ上に存在するユニットインスタンスの型
@@ -42,7 +43,7 @@ export interface PlacedUnit {
   position: { x: number; y: number };
   currentHp: number;
   owner: 'player' | 'enemy';
-  orientation: number; // 0-359 degrees, 0 is typically right or up based on game convention
+  orientation: number;
   targetOrientation?: number;
   isTurning?: boolean;
   isMoving?: boolean;
@@ -55,7 +56,6 @@ export interface PlacedUnit {
   lastAttackTimeAP?: number;
   justHit?: boolean;
   hitTimestamp?: number;
-  // Production related (for commander units)
   productionQueue?: {
     unitIdToProduce: string;
     productionCost: number;
@@ -71,32 +71,31 @@ interface GameSettingsState {
   enemyFaction: Faction;
   initialCost: InitialCost;
   selectedMapId: string | null;
-  currentMapDataState: MapData | null; // 戦略拠点情報も含む現在のマップデータ
+  currentMapDataState: MapData | null;
 
   initialDeployment: PlacedUnit[];
   allUnitsOnMap: PlacedUnit[];
   gameOverMessage: string | null;
 
   victoryPoints: { player: number; enemy: number };
-  gameTimeElapsed: number; // seconds
-  gameTimeLimit: number;   // seconds
+  gameTimeElapsed: number;
+  gameTimeLimit: number;
   targetVictoryPoints: number;
 
   playerResources: number;
   enemyResources: number;
 
-  // アクション
   setAiDifficulty: (difficulty: AiDifficulty) => void;
   setPlayerFaction: (faction: Faction) => void;
   setEnemyFaction: (faction: Faction) => void;
   setInitialCost: (cost: InitialCost) => void;
   setSelectedMapId: (mapId: string | null) => void;
-  setCurrentMapData: (mapData: MapData | null) => void;
+  setCurrentMapData: (mapData: MapData | null) => void; // 引数の型は MapData | null のまま
   setInitialDeployment: (deploymentConfig: InitialDeployedUnitConfig[], unitsDataMap: Map<string, UnitData>) => void;
   setAllUnitsOnMap: (units: PlacedUnit[]) => void;
   updateUnitOnMap: (instanceId: string, updates: Partial<Omit<PlacedUnit, 'instanceId' | 'unitId'>>) => void;
   addUnitToMap: (unit: PlacedUnit) => void;
-  removeUnitFromMap: (instanceId: string) => void; // statusを'destroyed'にする方が良い場合もある
+  removeUnitFromMap: (instanceId: string) => void;
   setGameOver: (message: string) => void;
   updateStrategicPointState: (pointId: string, updates: Partial<StrategicPoint>) => void;
   addVictoryPointsToPlayer: (player: 'player' | 'enemy', points: number) => void;
@@ -113,7 +112,6 @@ interface GameSettingsState {
 }
 
 export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
-  // 初期状態
   aiDifficulty: 'normal',
   playerFaction: 'alpha_force',
   enemyFaction: 'bravo_corp',
@@ -127,49 +125,70 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
   gameTimeElapsed: 0,
   gameTimeLimit: 30 * 60,
   targetVictoryPoints: 100,
+  playerResources: 500,
+  enemyResources: 500,
 
-  playerResources: 500, // 初期状態は initialCost と同期させる
-  enemyResources: 500,  // 初期状態は initialCost と同期させる
-
-  // アクションの実装
   setAiDifficulty: (difficulty) => set({ aiDifficulty: difficulty }),
   setPlayerFaction: (faction) => set({ playerFaction: faction }),
   setEnemyFaction: (faction) => set({ enemyFaction: faction }),
   setInitialCost: (cost) => {
     set({
       initialCost: cost,
-      playerResources: cost, // initialCost 変更時にリソースも更新
-      enemyResources: cost,  // initialCost 変更時にリソースも更新
+      playerResources: cost,
+      enemyResources: cost,
     });
   },
   setSelectedMapId: (mapId) => set({ selectedMapId: mapId }),
 
-  setCurrentMapData: (mapData) => {
+  setCurrentMapData: (baseMapDataWithOptionalHexes) => { // 引数名は baseMapData の方が適切かも
+    if (!baseMapDataWithOptionalHexes) {
+      set({
+        currentMapDataState: null,
+        gameTimeLimit: 30 * 60, // デフォルトに戻す
+        targetVictoryPoints: 100, // デフォルトに戻す
+        victoryPoints: { player: 0, enemy: 0 },
+        gameTimeElapsed: 0,
+        gameOverMessage: null,
+        allUnitsOnMap: [], // マップがないならユニットも空に
+        playerResources: get().initialCost, // 初期コストに戻す
+        enemyResources: get().initialCost,
+      });
+      return;
+    }
+
+    // ★★★ 地形をランダム生成して上書き ★★★
+    // randomizeMapTerrain は MapData を期待するので、型アサーションか、
+    // randomizeMapTerrain の引数型を Omit<MapData, 'hexes'> | MapData のように許容する。
+    // ここでは、baseMapDataWithOptionalHexes が MapData の構造を持つと仮定して渡す。
+    // ただし、渡されるオブジェクトの hexes が未定義または空であることを randomizeMapTerrain が想定している。
+    const mapDataWithRandomHexes = randomizeMapTerrain(baseMapDataWithOptionalHexes as MapData);
+
     let gameTimeLimit = 30 * 60;
     let targetVP = 100;
-    if (mapData) {
-        if (mapData.cols <= 20) { gameTimeLimit = 20 * 60; targetVP = 75; }
-        else if (mapData.cols <= 25) { gameTimeLimit = 30 * 60; targetVP = 100; }
+    // mapDataWithRandomHexes が null になることはないはずだが、念のためチェック
+    if (mapDataWithRandomHexes) {
+        if (mapDataWithRandomHexes.cols <= 20) { gameTimeLimit = 20 * 60; targetVP = 75; }
+        else if (mapDataWithRandomHexes.cols <= 25) { gameTimeLimit = 30 * 60; targetVP = 100; }
         else { gameTimeLimit = 40 * 60; targetVP = 150; }
     }
+
     const currentInitialCost = get().initialCost;
     set({
-      currentMapDataState: mapData,
+      currentMapDataState: mapDataWithRandomHexes,
       gameTimeLimit: gameTimeLimit,
       targetVictoryPoints: targetVP,
       victoryPoints: { player: 0, enemy: 0 },
       gameTimeElapsed: 0,
       gameOverMessage: null,
-      allUnitsOnMap: get().initialDeployment,
-      playerResources: currentInitialCost, // マップ変更時にもリソースを初期コストに戻す
-      enemyResources: currentInitialCost,  // マップ変更時にもリソースを初期コストに戻す
+      allUnitsOnMap: get().initialDeployment, // マップがロード/変更されたら初期配置に戻す
+      playerResources: currentInitialCost,
+      enemyResources: currentInitialCost,
     });
   },
 
   setInitialDeployment: (deploymentConfig, unitsDataMap) => {
     const placedUnits: PlacedUnit[] = deploymentConfig.map((depUnit, index) => {
       const unitDef = unitsDataMap.get(depUnit.unitId);
-      // ownerOverride があればそれを使用、なければ交互に割り当て (テスト用)
       const ownerType = depUnit.ownerOverride || (index % 2 === 0 ? 'player' : 'enemy');
       return {
         instanceId: `${depUnit.unitId}_${ownerType}_${Date.now()}_${index}_${Math.random().toString(16).slice(2)}`,
@@ -194,6 +213,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
         productionQueue: null,
       };
     });
+    // initialDeployment を設定したら、allUnitsOnMap もそれに合わせるのが一般的
     set({ initialDeployment: placedUnits, allUnitsOnMap: [...placedUnits] });
   },
 
@@ -210,7 +230,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
 
   addUnitToMap: (unit) => set(state => ({ allUnitsOnMap: [...state.allUnitsOnMap, unit] })),
 
-  removeUnitFromMap: (instanceId) => // ユニットを完全に削除するのではなく、statusを'destroyed'にする方が、後処理や判定に便利
+  removeUnitFromMap: (instanceId) =>
     set(state => ({
       allUnitsOnMap: state.allUnitsOnMap.map(u =>
         u.instanceId === instanceId ? { ...u, status: 'destroyed', currentHp: 0 } : u
@@ -234,7 +254,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
     set(state => ({
       victoryPoints: {
         ...state.victoryPoints,
-        [player]: Math.max(0, state.victoryPoints[player] + points), // 0未満にならないように
+        [player]: Math.max(0, state.victoryPoints[player] + points),
       },
     })),
 
@@ -242,14 +262,18 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
 
   resetGameSessionState: () => {
     const currentInitialCost = get().initialCost;
+    // initialDeployment はマップ選択時に設定されるため、ここではリセットしない。
+    // allUnitsOnMap は initialDeployment に基づいてリセットされるべき。
+    const currentInitialDeployment = get().initialDeployment;
     set({
         victoryPoints: { player: 0, enemy: 0 },
         gameTimeElapsed: 0,
         gameOverMessage: null,
-        allUnitsOnMap: get().initialDeployment, // initialDeployment自体はマップ選択時に設定される想定
+        allUnitsOnMap: [...currentInitialDeployment], // 初期配置に戻す
         playerResources: currentInitialCost,
         enemyResources: currentInitialCost,
-        // currentMapDataState は setCurrentMapData でリセットされるので、ここでは触らない
+        // currentMapDataState は setCurrentMapData で管理される。
+        // selectedMapId もマップ選択画面で管理される。
     });
   },
 
@@ -278,7 +302,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
     if (currentResources < unitDef.cost) return { success: false, message: "Not enough resources." };
 
     const productionTimeMs = unitDef.productionTime * 1000;
-    addResourcesAction(-unitDef.cost); // リソースを消費
+    addResourcesAction(-unitDef.cost);
 
     set(state => ({
       allUnitsOnMap: state.allUnitsOnMap.map(u =>
@@ -309,7 +333,6 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
   },
 }));
 
-// 定数として選択肢をエクスポート
 export const aiDifficultiesList: { value: AiDifficulty, label: string }[] = [
   { value: 'easy', label: 'Easy' },
   { value: 'normal', label: 'Normal' },

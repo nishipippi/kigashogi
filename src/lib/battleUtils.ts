@@ -1,36 +1,84 @@
 // src/lib/battleUtils.ts
 import type { UnitData, UnitWeaponStats } from '@/types/unit';
 import type { PlacedUnit } from '@/stores/gameSettingsStore';
-import type { MapData } from '@/types/map';
+import type { MapData, HexData, TerrainType } from '@/types/map'; // TerrainType, HexData をインポート
+import { logicalToAxial, hexDistance, getAxialLine } from './hexUtils'; // getAxialLine をインポート
 
 /**
  * 射線 (Line of Sight) が通っているか判定する。
- * 現状は非常にシンプルで、ユニットによる遮蔽は考慮せず常にtrueを返す。
- * 将来的には、ここに地形や他のユニットによる遮蔽判定ロジックを実装。
+ * 地形によってのみ遮られる。他のユニットは遮らない。
  * @param attacker 攻撃ユニット
  * @param target 防御ユニット
- * @param mapData マップデータ (将来の地形判定用)
- * @param allUnitsOnMap 全ユニットリスト (将来のユニット遮蔽判定用)
+ * @param mapData マップデータ (地形判定用)
+ * @param allUnitsOnMap 全ユニットリスト (現在は未使用だが、将来的な拡張のため残す)
  * @returns 射線が通っていればtrue
  */
 export function hasLineOfSight(
   attacker: PlacedUnit,
   target: PlacedUnit,
-  mapData: MapData | null, // 現在は未使用
-  allUnitsOnMap: PlacedUnit[] // 現在は未使用
+  mapData: MapData | null,
+  allUnitsOnMap: PlacedUnit[] // この引数は現状の仕様では直接使わないが、インターフェースとして残す
 ): boolean {
-  // KigaShogiの仕様: ユニット間に他のユニットがいても射線は遮られない。
-  // KigaShogiの仕様: 森林・市街地の視界/射線遮蔽: 当該ヘックスの向こう側は見えず、射線も通りません。
-  // KigaShogiの仕様: 丘陵/高台の射線: 丘陵/高台ヘックス自体は、その向こう側への射線を遮ります。
-  // 上記の仕様を実装するには、attackerとtarget間のヘックスライン上の地形情報を検査する必要がある。
-  // ここではMVPとして、常にtrueを返す。
-  return true;
+  if (!mapData || !mapData.hexes) {
+    // console.warn("hasLineOfSight: mapData or mapData.hexes is null, assuming LoS true for now.");
+    return true; // マップデータがなければ判定不可なので、仮にtrue (またはエラーハンドリング)
+  }
+
+  const attackerAxial = logicalToAxial(attacker.position.x, attacker.position.y);
+  const targetAxial = logicalToAxial(target.position.x, target.position.y);
+
+  // 自分自身をターゲットにしている場合は常に射線OK (通常はありえないが念のため)
+  if (attacker.instanceId === target.instanceId) {
+      return true;
+  }
+
+  // 隣接ヘックス同士は常に射線が通る
+  if (hexDistance(attackerAxial.q, attackerAxial.r, targetAxial.q, targetAxial.r) <= 1) {
+    return true;
+  }
+
+  const line = getAxialLine(attackerAxial, targetAxial);
+
+  // 射線ライン上のヘックス (始点と終点を除く) をチェック
+  for (let i = 1; i < line.length - 1; i++) {
+    const hexPos = line[i];
+    const hexKey = `${hexPos.q},${hexPos.r}`;
+    const hexData = mapData.hexes[hexKey];
+
+    if (hexData) {
+      const terrain = hexData.terrain;
+      // 射線を遮る地形タイプ
+      const blockingTerrains: TerrainType[] = ['forest', 'city', 'mountain', 'hills']; // hillsも遮蔽リストに追加
+
+      if (blockingTerrains.includes(terrain)) {
+        // 丘(hills)の場合の特別ルール:
+        // 攻撃者もターゲットもその丘ヘックス上にいない場合のみ、その丘は射線を遮る
+        if (terrain === 'hills') {
+          const attackerOnThisBlockingHex = attackerAxial.q === hexPos.q && attackerAxial.r === hexPos.r;
+          const targetOnThisBlockingHex = targetAxial.q === hexPos.q && targetAxial.r === hexPos.r;
+          if (attackerOnThisBlockingHex || targetOnThisBlockingHex) {
+            // 攻撃者かターゲットがこの遮蔽ヘックス(丘)自身にいるなら、そのヘックスは遮らない
+            continue;
+          }
+        }
+        // console.log(`LoS blocked by ${terrain} at ${hexKey} for target ${target.name}`);
+        return false; // 射線を遮る地形
+      }
+    } else {
+      // マップデータに存在しないヘックスは、範囲外などとして扱われる。
+      // 厳密にはラインがマップ外に出た時点で遮蔽とみなすか、マップ定義が完全である前提とする。
+      // ここでは、定義外のヘックスは不明な障害物として遮蔽とみなす。
+      // console.warn(`LoS check: Hex data not found for ${hexKey}, assuming blocked.`);
+      return false;
+    }
+  }
+
+  return true; // 遮るものがなければ射線は通る
 }
 
 interface DamageOutput {
   damageDealt: number;
-  didPenetrate: boolean; // AP攻撃で貫通したか
-  // effects?: string[]; // 将来的なエフェクト情報用 (例: 'ricochet', 'penetration')
+  didPenetrate: boolean;
 }
 
 /**
@@ -59,95 +107,60 @@ export function calculateDamage(
   const weaponStats: UnitWeaponStats | undefined =
     weaponType === 'HE' ? attackerUnitDef.stats.heWeapon : attackerUnitDef.stats.apWeapon;
 
-  if (!weaponStats) {
-    return { damageDealt: 0, didPenetrate: false }; // 該当武器なし
+  if (!weaponStats || weaponStats.power <= 0) { // 武器がないか、パワーが0ならダメージなし
+    return { damageDealt: 0, didPenetrate: false };
   }
 
   if (weaponType === 'HE') {
-    // HEパワー:
-    // KigaShogi仕様: 対象が装甲を持たないユニット: 最終ダメージ = HEパワー
-    // KigaShogi仕様: 対象が装甲を持つユニット: ダメージなし (AP攻撃のみ有効)
+    // 自走砲のHE攻撃は特別ルール (要件定義補足資料)
+    // これは GameplayScreen 側で範囲攻撃として処理されるべきで、
+    // この calculateDamage は直接照準攻撃を想定。
+    // もし自走砲が直接HEで狙うケースがあるなら、ここでも特別扱いが必要。
+    // 現状の自走砲のHE DPSは0.5と低いので、直接照準での大きな効果は期待薄。
+    // 天面装甲への微小ダメージは、現状の仕様では自走砲の「範囲攻撃」に限定されている。
+    // この関数が「直接攻撃」のみを扱うなら、自走砲のHEも通常のHEルールで良い。
+    // 一旦、通常のHEルールに従う。
 
-    // 自走砲のHE攻撃は装甲ユニットの天面装甲に対して効果を持つ特別ルール
-    if (attackerUnitDef.id === 'self_propelled_artillery' && targetUnitDef.stats.armor.top !== undefined) {
-      // KigaShogi要件定義補足資料:
-      // "自走砲のHE範囲攻撃において、着弾範囲内の装甲ユニットに対し、天面装甲で判定する微小ダメージ
-      // （例：AP1相当の固定ダメージ、ただし天面装甲値で軽減/無効化可能）が発生する"
-      // ここでは簡易的に、HEパワーの一定割合を天面装甲で軽減する形で実装。
-      // 例: HEパワーの20%を基礎ダメージとし、天面装甲で軽減。最低0ダメージ。
-      // (自走砲のHEは着弾まで2秒、範囲攻撃という仕様もあるので、直接攻撃のこの関数とは別に処理が必要かも)
-      // 今回は直接攻撃のダメージ計算なので、もし自走砲が直接HEで狙った場合を想定
-      const baseImpactDamage = Math.floor(weaponStats.power * 0.2); // 例: HEパワーの20%
-      damageDealt = Math.max(0, baseImpactDamage - targetUnitDef.stats.armor.top);
-      didPenetrate = damageDealt > 0; // ダメージがあれば貫通とみなす
-      return { damageDealt, didPenetrate };
-    }
-
-    // 通常のHE攻撃
     const targetTotalArmor =
-      targetUnitDef.stats.armor.front +
-      targetUnitDef.stats.armor.side +
-      targetUnitDef.stats.armor.back +
-      targetUnitDef.stats.armor.top;
+      (targetUnitDef.stats.armor.front || 0) +
+      (targetUnitDef.stats.armor.side || 0) +
+      (targetUnitDef.stats.armor.back || 0) +
+      (targetUnitDef.stats.armor.top || 0);
 
-    if (targetTotalArmor === 0) { // 装甲を持たないユニット (例: 歩兵、司令官)
+    if (targetTotalArmor === 0) { // 装甲を持たないユニット
       damageDealt = weaponStats.power;
-      didPenetrate = true; // HEが効果あり＝貫通とみなす
-    } else {
-      // 装甲を持つユニットにはHEは基本的に無効
+      didPenetrate = true;
+    } else { // 装甲を持つユニットにはHEは基本的に無効
       damageDealt = 0;
       didPenetrate = false;
     }
   } else if (weaponType === 'AP') {
-    // APパワー:
-    // KigaShogi仕様: 装甲貫通判定: APパワー vs 対象の被弾部位の装甲値
-    // KigaShogi仕様: 貫通した場合: 最終ダメージ = APパワー - 装甲値 (最低ダメージ1)
-    // KigaShogi仕様: 非貫通の場合 (跳弾): 最終ダメージ = 1
-
     let targetArmorAtHitLocation: number;
 
-    // 攻撃者から見たターゲットの相対角度を計算 (0度がターゲットの真後ろ、180度がターゲットの真正面になるように調整)
     const dx = targetPosition.x - attackerPosition.x;
     const dy = targetPosition.y - attackerPosition.y;
     const angleFromAttackerToTargetRad = Math.atan2(dy, dx);
-    let angleFromAttackerToTargetDeg = (angleFromAttackerToTargetRad * 180 / Math.PI + 360) % 360; // 0-359度
+    const angleFromAttackerToTargetDeg = (angleFromAttackerToTargetRad * 180 / Math.PI + 360) % 360;
 
-    // ターゲットの向きを基準とした、攻撃が来る方向 (0度がターゲットの正面から、180度が背面から)
-    // ターゲットの向き (targetOrientation) は、例えば0度が右、90度が上を示すと仮定。
-    // angleFromAttackerToTargetDeg は、例えば攻撃者がターゲットの左にいる場合、約180度になる。
-    // ターゲットが右(0度)を向いている時に左(180度)から攻撃されると、正面被弾。
-    // ターゲットが上(90度)を向いている時に左(180度)から攻撃されると、左側面被弾。
-    
     let impactDirectionRelativeToTargetDeg = (angleFromAttackerToTargetDeg - targetOrientation + 360 + 180) % 360;
-    // +180 しているのは、攻撃が来る方向をターゲットの正面(0度)基準で表現するため。
-    // 例えば、targetOrientation=0 (右向き)、angleFromAttackerToTargetDeg=180 (左から攻撃) の場合、
-    // (180 - 0 + 180) % 360 = 0 => 正面からの攻撃と判定したい。
 
-    // 0-180度に正規化 (左右対称なので、絶対値で判断)
     if (impactDirectionRelativeToTargetDeg > 180) {
         impactDirectionRelativeToTargetDeg = 360 - impactDirectionRelativeToTargetDeg;
     }
-    // これで impactDirectionRelativeToTargetDeg は 0度(正面) ～ 180度(背面) の範囲になる。
 
-    // 被弾部位の判定 (角度の閾値は調整可能)
-    if (impactDirectionRelativeToTargetDeg <= 60) { // 正面 +/-60度
-      targetArmorAtHitLocation = targetUnitDef.stats.armor.front;
-      // console.log(`Hit Front Armor: ${targetArmorAtHitLocation} (Impact Angle: ${impactDirectionRelativeToTargetDeg.toFixed(1)})`);
-    } else if (impactDirectionRelativeToTargetDeg <= 120) { // 側面 +/-60度から+/-120度
-      targetArmorAtHitLocation = targetUnitDef.stats.armor.side;
-      // console.log(`Hit Side Armor: ${targetArmorAtHitLocation} (Impact Angle: ${impactDirectionRelativeToTargetDeg.toFixed(1)})`);
-    } else { // 背面 +/-120度から180度
-      targetArmorAtHitLocation = targetUnitDef.stats.armor.back;
-      // console.log(`Hit Back Armor: ${targetArmorAtHitLocation} (Impact Angle: ${impactDirectionRelativeToTargetDeg.toFixed(1)})`);
+    if (impactDirectionRelativeToTargetDeg <= 60) {
+      targetArmorAtHitLocation = targetUnitDef.stats.armor.front || 0;
+    } else if (impactDirectionRelativeToTargetDeg <= 120) {
+      targetArmorAtHitLocation = targetUnitDef.stats.armor.side || 0;
+    } else {
+      targetArmorAtHitLocation = targetUnitDef.stats.armor.back || 0;
     }
-    // 天面装甲は、自走砲の曲射や航空攻撃など、特別な攻撃種別でのみ考慮される想定。
-    // 直接射撃のAP弾では通常、天面には当たらない。
 
-    if (weaponStats.power > targetArmorAtHitLocation) { // 貫通
+    if (weaponStats.power > targetArmorAtHitLocation) {
       damageDealt = Math.max(1, weaponStats.power - targetArmorAtHitLocation);
       didPenetrate = true;
-    } else { // 非貫通 (跳弾)
-      damageDealt = 1; // KigaShogi仕様: 非貫通時は1ダメージ
+    } else {
+      damageDealt = 1; // 非貫通時は1ダメージ
       didPenetrate = false;
     }
   }

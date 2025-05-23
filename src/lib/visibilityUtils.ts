@@ -1,130 +1,176 @@
 // src/lib/visibilityUtils.ts
 import type { PlacedUnit } from '@/stores/gameSettingsStore';
-import type { UnitData } from '@/types/unit';
+import type { MapData, TerrainType } from '@/types/map';
+import {
+  TERRAIN_CONCEALMENT_MODIFIERS,
+  TERRAIN_SIGHT_MODIFIERS,
+  ATTACK_DISCOVERY_PENALTY_MULTIPLIER,
+  ATTACK_DISCOVERY_PENALTY_DURATION_MS // この定数は現状直接使っていませんが、将来のために残します
+} from '@/types/map'; // 定数をインポート
 import { UNITS_MAP } from '@/gameData/units';
-import { hexDistance, logicalToAxial, getHexLinePath, axialToLogical } from './hexUtils'; // getHexLinePath, axialToLogical を追加インポート
-import type { MapData } from '@/types/map'; // MapData をインポート
-import { TERRAIN_MOVE_COSTS } from '@/types/map'; // 地形タイプ判定のため (例: 森林なら隠蔽など)
+import { hexDistance, logicalToAxial, getAxialLine } from './hexUtils';
 
 /**
- * 特定のユニットがターゲットユニットを発見できるか判定する
- * @param observer 観測者ユニット
- * @param target ターゲットユニット
- * @param mapData 現在のマップデータ (地形による視界遮蔽のため)
- * @param allUnitsOnMap マップ上の全ユニット (他のユニットによる視界遮蔽のため)
- * @returns 発見できればtrue
+ * ユニットAがユニットBを視認できるか判定する
+ * @param unitA 視認する側のユニット
+ * @param unitB 視認される側のユニット
+ * @param mapData 現在のマップデータ
+ * @param allUnitsOnMap マップ上の全ユニット (今回はユニットによる遮蔽は考慮しない)
+ * @param currentTime 現在のゲーム時刻 (ms) - 攻撃ペナルティ判定用
+ * @returns 視認できれば true、できなければ false
  */
 export function canObserveTarget(
-  observer: PlacedUnit,
-  target: PlacedUnit,
+  unitA: PlacedUnit,
+  unitB: PlacedUnit,
   mapData: MapData | null,
-  allUnitsOnMap: PlacedUnit[]
+  allUnitsOnMap: PlacedUnit[], // 現状の仕様では直接的には使用しないが、将来のユニット遮蔽のために残す
+  currentTime: number // 攻撃ペナルティの時間管理に使用
 ): boolean {
-  if (observer.owner === target.owner && observer.instanceId !== target.instanceId) {
-    // 基本的に味方は見えるが、Fog of Warの概念として自ユニットの視界範囲外の味方は見えない、とする場合もある。
-    // RTSの一般的な仕様として、味方ユニットは位置が常にわかることが多いのでtrueで良いでしょう。
+  if (!mapData || !mapData.hexes || !unitA || !unitB || unitA.status === 'destroyed' || unitB.status === 'destroyed') {
+    return false;
+  }
+
+  const unitADef = UNITS_MAP.get(unitA.unitId);
+  const unitBDef = UNITS_MAP.get(unitB.unitId);
+
+  if (!unitADef || !unitBDef) {
+    return false;
+  }
+
+  const unitAPosAxial = logicalToAxial(unitA.position.x, unitA.position.y);
+  const unitBPosAxial = logicalToAxial(unitB.position.x, unitB.position.y);
+
+  // 自分自身は常に視認可能 (またはゲームルールによる)
+  if (unitA.instanceId === unitB.instanceId) {
     return true;
   }
-  if (observer.instanceId === target.instanceId) return true; // 自分自身は常に見える
 
-  const observerDef = UNITS_MAP.get(observer.unitId);
-  const targetDef = UNITS_MAP.get(target.unitId);
+  // 1. 距離の計算
+  const distance = hexDistance(unitAPosAxial.q, unitAPosAxial.r, unitBPosAxial.q, unitBPosAxial.r);
 
-  if (!observerDef || !targetDef) return false;
-
-  // 1. 距離に基づく基本的な発見判定
-  const baseDetectionRange = targetDef.stats.baseDetectionRange;
-  const sightMultiplier = observerDef.stats.sightMultiplier;
-
-  if (sightMultiplier <= 0) return false;
-
-  // TODO: 地形効果と攻撃ペナルティを考慮した修正式をここに実装
-  // KigaShogi要件定義補足資料 8. 情報戦システム (視界と隠蔽)
-  // 実効被発見距離 = (相手基礎被発見距離 * 地形隠蔽係数 * 攻撃ペナルティ係数) / (自軍視界倍率 * 自軍地形視界ボーナス係数)
-
-  // MVPの簡略化 (地形効果、攻撃ペナルティはx1.0とする)
-  let terrainConcealmentBonus = 1.0; // ターゲットがいる地形の隠蔽ボーナス
-  let observerSightBonus = 1.0;      // 観測者がいる地形の視界ボーナス
-  let attackPenaltyMultiplier = 1.0; // ターゲットが攻撃中のペナルティ
-
-  // ターゲットの地形隠蔽ボーナス (例)
-  if (mapData && mapData.hexes) {
-    const targetAxial = logicalToAxial(target.position.x, target.position.y);
-    const targetHexKey = `${targetAxial.q},${targetAxial.r}`;
-    const targetHexData = mapData.hexes[targetHexKey];
-    if (targetHexData) {
-      if (targetHexData.terrain === 'forest') terrainConcealmentBonus = 1.5; // 森は発見されにくい
-      else if (targetHexData.terrain === 'city') terrainConcealmentBonus = 2.0; // 市街地はさらに発見されにくい
-      else if (targetHexData.terrain === 'hills') terrainConcealmentBonus = 0.8; // 丘は発見されやすい
+  // 2. 実効被発見距離の計算
+  // 2.1 相手ユニットBの地形による隠蔽ボーナス係数
+  const unitBHexKey = `${unitBPosAxial.q},${unitBPosAxial.r}`;
+  const unitBHexData = mapData.hexes[unitBHexKey];
+  let terrainConcealmentB = 1.0;
+  if (unitBHexData) {
+    const modifier = TERRAIN_CONCEALMENT_MODIFIERS[unitBHexData.terrain];
+    if (typeof modifier === 'number') {
+      terrainConcealmentB = modifier;
+    }
+    // 市街地の特例: 歩兵ユニット('infantry' type)のみ効果
+    if (unitBHexData.terrain === 'city' && unitBDef.type !== 'infantry') {
+      terrainConcealmentB = 1.0; // 歩兵でなければ市街地の隠蔽ボーナスなし
     }
   }
 
-  // 観測者の地形視界ボーナス (例)
-  if (mapData && mapData.hexes) {
-    const observerAxial = logicalToAxial(observer.position.x, observer.position.y);
-    const observerHexKey = `${observerAxial.q},${observerAxial.r}`;
-    const observerHexData = mapData.hexes[observerHexKey];
-    if (observerHexData && observerHexData.terrain === 'hills') {
-      observerSightBonus = 1.2; // 丘は視界が良い
+  // 2.2 攻撃による発見ペナルティ係数 (unitBが最近攻撃したか)
+  let attackPenaltyB = 1.0;
+  // PlacedUnit に lastAttackTimestamp (攻撃がヒットした/開始した時刻) があるとより正確
+  // 今回は、unitB が攻撃関連のステータスである場合にペナルティを適用する簡易ロジック
+  // (このロジックだと、攻撃準備中からずっとペナルティになる。実際の攻撃実行時からの時限式が望ましい)
+  // gameplay/page.tsx の攻撃成功時に unitB.lastAttackTimestamp = currentTime; のようにセットし、
+  // ここで (currentTime - unitB.lastAttackTimestamp) < ATTACK_DISCOVERY_PENALTY_DURATION_MS で判定する。
+  if (unitB.attackTargetInstanceId && (unitB.status?.startsWith('attacking_') || unitB.status?.startsWith('reloading_'))) {
+    // TODO: より正確な攻撃実行時刻からのペナルティ期間を判定する
+    // 現状では、攻撃ステータスなら常にペナルティがかかる
+    // PlacedUnitに lastAttackTimestamp があれば、それを使って ATTACK_DISCOVERY_PENALTY_DURATION_MS と比較する
+    // if (unitB.lastAttackTimestamp && (currentTime - unitB.lastAttackTimestamp) < ATTACK_DISCOVERY_PENALTY_DURATION_MS) {
+    //    attackPenaltyB = ATTACK_DISCOVERY_PENALTY_MULTIPLIER;
+    // }
+    // 今回は簡易的に、攻撃関連ステータスならペナルティ
+     attackPenaltyB = ATTACK_DISCOVERY_PENALTY_MULTIPLIER;
+  }
+
+
+  // 2.3 自軍ユニットAの地形視界ボーナス係数
+  const unitAHexKey = `${unitAPosAxial.q},${unitAPosAxial.r}`;
+  const unitAHexData = mapData.hexes[unitAHexKey];
+  let terrainSightA = 1.0;
+  if (unitAHexData) {
+    const modifier = TERRAIN_SIGHT_MODIFIERS[unitAHexData.terrain];
+    if (typeof modifier === 'number') {
+      terrainSightA = modifier;
     }
   }
 
-  // ターゲットの攻撃ペナルティ (例: 攻撃アニメーション中などを示す `status` を参照)
-  if (target.status?.startsWith('attacking_') || target.status?.startsWith('reloading_')) {
-    attackPenaltyMultiplier = 2.0; // 攻撃中は2倍見つかりやすい
+  // 2.4 計算式 (要件定義補足資料の修正式ベース)
+  // 実効被発見距離 = (相手基礎被発見距離 * 相手隠蔽ボーナス * 相手攻撃ペナルティ) / (自分視界倍率 * 自分地形視界ボーナス)
+  const baseDetectionRangeB = unitBDef.stats.baseDetectionRange;
+  const sightMultiplierA = unitADef.stats.sightMultiplier;
+
+  // 0除算を避ける
+  if (sightMultiplierA === 0 || terrainSightA === 0) {
+    return false; // 視界能力が0なら何も見えない
   }
 
   const effectiveDetectionRange =
-    (baseDetectionRange * terrainConcealmentBonus * attackPenaltyMultiplier) /
-    (sightMultiplier * observerSightBonus);
+    (baseDetectionRangeB * terrainConcealmentB * attackPenaltyB) /
+    (sightMultiplierA * terrainSightA);
 
-  const observerAxialPos = logicalToAxial(observer.position.x, observer.position.y);
-  const targetAxialPos = logicalToAxial(target.position.x, target.position.y);
-  const distance = hexDistance(observerAxialPos.q, observerAxialPos.r, targetAxialPos.q, targetAxialPos.r);
-
-  if (distance > effectiveDetectionRange) {
-    return false; // 距離的に発見できない
-  }
-
-  // 2. 射線 (LoS) 判定 (地形や他のユニットによる遮蔽)
-  // KigaShogi要件定義: 森林・市街地は向こう側が見えない。丘陵/高台は稜線越え不可。
-  // hasLineOfSight を別途実装し、ここで呼び出すのが望ましい。
-  // MVPでは、LoS判定は省略し、距離だけで判断。将来的には以下のような処理。
-
-  /*
-  if (mapData && mapData.hexes) {
-    const linePathAxial = getHexLinePath(observerAxialPos.q, observerAxialPos.r, targetAxialPos.q, targetAxialPos.r)
-                            .map(logPos => logicalToAxial(logPos.x, logPos.y)); // getHexLinePathが論理座標を返すのでAxialに再変換
-
-    for (const pathNodeAxial of linePathAxial) {
-      // スタートとゴール自身は遮蔽物として評価しない
-      if ((pathNodeAxial.q === observerAxialPos.q && pathNodeAxial.r === observerAxialPos.r) ||
-          (pathNodeAxial.q === targetAxialPos.q && pathNodeAxial.r === targetAxialPos.r)) {
-        continue;
-      }
-
-      const hexKey = `${pathNodeAxial.q},${pathNodeAxial.r}`;
-      const hexData = mapData.hexes[hexKey];
-      if (hexData) {
-        if (hexData.terrain === 'forest' || hexData.terrain === 'city' || hexData.terrain === 'mountain') {
-          // 厳密には、隣接ヘックス同士は見える、などのルールも考慮
-          return false; // 視線を遮る地形で遮蔽
-        }
-        // 丘陵の稜線越え判定はより複雑 (高低差と中間のヘックスを考慮)
-      }
-
-      // 他のユニットによる遮蔽 (大型ユニットのみなど、ルールによる)
-      // for (const otherUnit of allUnitsOnMap) {
-      //   if (otherUnit.instanceId === observer.instanceId || otherUnit.instanceId === target.instanceId) continue;
-      //   const otherUnitAxial = logicalToAxial(otherUnit.position.x, otherUnit.position.y);
-      //   if (otherUnitAxial.q === pathNodeAxial.q && otherUnitAxial.r === pathNodeAxial.r) {
-      //     // ユニットサイズや透明度なども考慮
-      //     return false; // 他のユニットで遮蔽
-      //   }
-      // }
+  // 3. 視線の確認 (Line of Sight for Vision)
+  // ユニットAからユニットBへの視線が地形によって遮られていないか確認
+  // battleUtils の hasLineOfSight と同様のロジックだが、視界遮蔽専用のルール。
+  // 今回は、ユニットによる遮蔽は考慮しない。
+  function hasLineOfVision(
+    observerAxial: {q: number, r: number},
+    targetAxial: {q: number, r: number},
+    map: MapData
+  ): boolean {
+    // 隣接ヘックスは常に視線が通る
+    if (hexDistance(observerAxial.q, observerAxial.r, targetAxial.q, targetAxial.r) <= 1) {
+      return true;
     }
-  }
-  */
 
-  return true; // 距離内で、かつLoSが通れば発見可能
+    const line = getAxialLine(observerAxial, targetAxial);
+
+    // 視線ライン上の中間ヘックス (始点と終点を除く) をチェック
+    for (let i = 1; i < line.length - 1; i++) {
+      const hexPos = line[i];
+      const hexKey = `${hexPos.q},${hexPos.r}`;
+      const hexData = map.hexes[hexKey];
+
+      if (hexData) {
+        const terrain = hexData.terrain;
+        // 視界を遮る地形の定義 (例: 森林、市街地、山)
+        // KigaShogi仕様: 森林・市街地の視界/射線遮蔽: 当該ヘックスの向こう側は見えず、射線も通りません。
+        // KigaShogi仕様: 丘陵/高台の射線: 丘陵/高台ヘックス自体は、その向こう側への射線を遮ります。
+        // 視界も同様に遮ると仮定。
+        if (terrain === 'forest' || terrain === 'city' || terrain === 'mountain') {
+          return false;
+        }
+        if (terrain === 'hills') {
+          // 丘陵/高台の場合、そのヘックスが視認者とターゲットの間にあり、
+          // かつ視認者とターゲットの両方がその丘陵/高台の上にいない場合、稜線越えとみなして視界を遮る。
+          const observerOnThisHill = observerAxial.q === hexPos.q && observerAxial.r === hexPos.r;
+          const targetOnThisHill = targetAxial.q === hexPos.q && targetAxial.r === hexPos.r;
+          if (!observerOnThisHill && !targetOnThisHill) {
+            return false;
+          }
+        }
+      } else {
+        // マップデータに存在しないヘックスは視界が通らないとみなす (マップ範囲外など)
+        return false;
+      }
+    }
+    return true; // 遮るものがなければ視線は通る
+  }
+
+  const lineOfVisionClear = hasLineOfVision(unitAPosAxial, unitBPosAxial, mapData);
+
+  // 4. 発見判定
+  // 距離が実効被発見距離以下であり、かつ視線が通っている場合
+  const isDiscovered = distance <= effectiveDetectionRange && lineOfVisionClear;
+
+  // デバッグ用ログ (必要に応じてコメント解除)
+  // if (unitA.owner === 'player' && unitB.owner === 'enemy') {
+  //   console.log(
+  //     `Can ${unitADef.name} see ${unitBDef.name}? Dist:${distance.toFixed(1)}, ` +
+  //     `EffDetRange:${effectiveDetectionRange.toFixed(1)} (B_Base:${baseDetectionRangeB}, B_Conceal:${terrainConcealmentB.toFixed(1)}, B_AtkPen:${attackPenaltyB.toFixed(1)} / ` +
+  //     `A_Sight:${sightMultiplierA}, A_TerrSight:${terrainSightA.toFixed(1)}), ` +
+  //     `LoVClear:${lineOfVisionClear} => Discovered:${isDiscovered}`
+  //   );
+  // }
+
+  return isDiscovered;
 }
