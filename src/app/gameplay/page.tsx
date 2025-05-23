@@ -432,6 +432,17 @@ function GameplayContent() {
                 }
             }
             else if (unit.attackTargetInstanceId && (unit.status === 'aiming' || unit.status === 'attacking_he' || unit.status === 'attacking_ap' || unit.status === 'reloading_he' || unit.status === 'reloading_ap')) {
+                if (unit.owner === 'player') { // プレイヤーユニットに絞ってログを出す
+                    const targetUnitLog = currentUnitsFromStore.find(u => u.instanceId === unit.attackTargetInstanceId);
+                    console.log(
+                        `Player Unit ${unit.name} (${unit.instanceId.slice(-4)}) attempting to attack. Status: ${unit.status}`,
+                        `Target: ${targetUnitLog?.name} (${targetUnitLog?.instanceId.slice(-4)}), HP: ${targetUnitLog?.currentHp}`,
+                        `IsTurning: ${unit.isTurning}, IsMoving: ${unit.isMoving}`,
+                        `LoS: ${targetUnitLog ? hasLineOfSight(unit, targetUnitLog, currentMapDataForLoop, currentUnitsFromStore) : 'N/A'}`,
+                        // `WeaponChoice: ...` (weaponChoice が決まった後にログ)
+                        // `Distance: ...`
+                    );
+                }
                 if (unit.isTurning || unit.isMoving) return;
                 const targetUnit = currentUnitsFromStore.find(u => u.instanceId === unit.attackTargetInstanceId && u.status !== 'destroyed');
                 if (!targetUnit) { updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null }); return; }
