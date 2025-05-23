@@ -41,3 +41,31 @@ export function getHexWidth(hexSize: number): number {
 export function getHexHeight(hexSize: number): number {
   return 2 * hexSize;
 }
+
+/**
+ * 2つのヘックス間の距離を計算する (アキシャル座標)
+ * @param q1 ヘックス1のq座標
+ * @param r1 ヘックス1のr座標
+ * @param q2 ヘックス2のq座標
+ * @param r2 ヘックス2のr座標
+ * @returns 距離 (ヘックス数)
+ */
+export function hexDistance(q1: number, r1: number, q2: number, r2: number): number {
+  // キューブ座標に変換して距離を計算するのが一般的
+  const cq1 = q1;
+  const cr1 = r1;
+  const cs1 = -q1 - r1;
+
+  const cq2 = q2;
+  const cr2 = r2;
+  const cs2 = -q2 - r2;
+
+  return (Math.abs(cq1 - cq2) + Math.abs(cr1 - cr2) + Math.abs(cs1 - cs2)) / 2;
+}
+
+// 論理座標 (オフセット風) からアキシャル座標へ変換するヘルパー (必要なら)
+export function logicalToAxial(logicalX: number, logicalY: number): { q: number; r: number } {
+    const r = logicalY;
+    const q = logicalX - Math.floor(r / 2);
+    return { q, r };
+}

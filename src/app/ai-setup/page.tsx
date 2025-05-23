@@ -5,10 +5,10 @@ import Button from '@/components/ui/Button';
 // import Link from 'next/link'; // ButtonがLinkを内包するため不要になる場合あり
 import {
   useGameSettingsStore,
-  aiDifficulties, // ストアから選択肢をインポート
-  factions,       // ストアから選択肢をインポート
-  initialCosts    // ストアから選択肢をインポート
-} from '@/stores/gameSettingsStore'; // 作成したストアをインポート
+  aiDifficultiesList, // 名前に "List" を追加
+  factionsList,       // 名前に "List" を追加
+  initialCostsList    // 名前に "List" を追加
+} from '@/stores/gameSettingsStore';
 import type { AiDifficulty, Faction, InitialCost } from '@/stores/gameSettingsStore'; // 型もインポート
 
 export default function AiBattleSetupScreen() {
@@ -53,7 +53,7 @@ export default function AiBattleSetupScreen() {
             value={aiDifficulty} // ストアの状態をバインド
             onChange={handleAiDifficultyChange} // 変更時にストアを更新
           >
-            {aiDifficulties.map(opt => (
+            {aiDifficultiesList.map(opt => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
@@ -71,7 +71,7 @@ export default function AiBattleSetupScreen() {
             value={playerFaction} // ストアの状態をバインド
             onChange={handlePlayerFactionChange} // 変更時にストアを更新
           >
-            {factions.map(opt => (
+            {factionsList.map(opt => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
@@ -89,7 +89,7 @@ export default function AiBattleSetupScreen() {
             value={initialCost} // ストアの状態をバインド
             onChange={handleInitialCostChange} // 変更時にストアを更新
           >
-            {initialCosts.map(opt => (
+            {initialCostsList.map(opt => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
