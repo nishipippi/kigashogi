@@ -2,6 +2,7 @@
 import { create } from 'zustand';
 import type { UnitData } from '@/types/unit';
 import type { MapData, StrategicPoint } from '@/types/map';
+import { UNITS_MAP } from '@/gameData/units'; // UNITS_MAP をインポート
 
 // AI難易度の型
 export type AiDifficulty = 'easy' | 'normal' | 'hard' | 'very_hard';
@@ -16,6 +17,7 @@ export interface InitialDeployedUnitConfig {
   name: string;
   cost: number;
   position: { x: number; y: number };
+  ownerOverride?: 'player' | 'enemy'; // 初期配置でオーナーを強制指定する場合
 }
 
 // ユニットの取りうる状態
@@ -28,7 +30,7 @@ export type UnitStatus =
   | 'attacking_ap'
   | 'reloading_he'
   | 'reloading_ap'
-  | 'producing' // 生産中 (司令官ユニット用)
+  | 'producing' // 生産中 (司令官ユニット用だが、現在はproductionQueueで管理)
   | 'destroyed';
 
 // ゲームプレイ中にマップ上に存在するユニットインスタンスの型
@@ -54,7 +56,12 @@ export interface PlacedUnit {
   justHit?: boolean;
   hitTimestamp?: number;
   // Production related (for commander units)
-  productionQueue?: { unitIdToProduce: string; timeLeftMs: number; originalProductionTimeMs: number } | null;
+  productionQueue?: {
+    unitIdToProduce: string;
+    productionCost: number;
+    timeLeftMs: number;
+    originalProductionTimeMs: number;
+  } | null;
 }
 
 // ストアの状態の型定義
@@ -75,6 +82,9 @@ interface GameSettingsState {
   gameTimeLimit: number;   // seconds
   targetVictoryPoints: number;
 
+  playerResources: number;
+  enemyResources: number;
+
   // アクション
   setAiDifficulty: (difficulty: AiDifficulty) => void;
   setPlayerFaction: (faction: Faction) => void;
@@ -85,13 +95,21 @@ interface GameSettingsState {
   setInitialDeployment: (deploymentConfig: InitialDeployedUnitConfig[], unitsDataMap: Map<string, UnitData>) => void;
   setAllUnitsOnMap: (units: PlacedUnit[]) => void;
   updateUnitOnMap: (instanceId: string, updates: Partial<Omit<PlacedUnit, 'instanceId' | 'unitId'>>) => void;
-  addUnitToMap: (unit: PlacedUnit) => void; // ユニット生産完了時などに追加
-  removeUnitFromMap: (instanceId: string) => void; // ユニット破壊時（直接操作する代わりにアクションを用意）
+  addUnitToMap: (unit: PlacedUnit) => void;
+  removeUnitFromMap: (instanceId: string) => void; // statusを'destroyed'にする方が良い場合もある
   setGameOver: (message: string) => void;
   updateStrategicPointState: (pointId: string, updates: Partial<StrategicPoint>) => void;
   addVictoryPointsToPlayer: (player: 'player' | 'enemy', points: number) => void;
   incrementGameTime: () => void;
   resetGameSessionState: () => void;
+
+  setPlayerResources: (amount: number) => void;
+  addPlayerResources: (amount: number) => void;
+  setEnemyResources: (amount: number) => void;
+  addEnemyResources: (amount: number) => void;
+
+  startUnitProduction: (commanderInstanceId: string, unitIdToProduce: string, owner: 'player' | 'enemy') => { success: boolean, message: string };
+  clearCommanderProductionQueue: (commanderInstanceId: string) => void;
 }
 
 export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
@@ -107,14 +125,23 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
   gameOverMessage: null,
   victoryPoints: { player: 0, enemy: 0 },
   gameTimeElapsed: 0,
-  gameTimeLimit: 30 * 60,  // Default 30 minutes
-  targetVictoryPoints: 100, // Default 100 VP
+  gameTimeLimit: 30 * 60,
+  targetVictoryPoints: 100,
+
+  playerResources: 500, // 初期状態は initialCost と同期させる
+  enemyResources: 500,  // 初期状態は initialCost と同期させる
 
   // アクションの実装
   setAiDifficulty: (difficulty) => set({ aiDifficulty: difficulty }),
   setPlayerFaction: (faction) => set({ playerFaction: faction }),
   setEnemyFaction: (faction) => set({ enemyFaction: faction }),
-  setInitialCost: (cost) => set({ initialCost: cost }),
+  setInitialCost: (cost) => {
+    set({
+      initialCost: cost,
+      playerResources: cost, // initialCost 変更時にリソースも更新
+      enemyResources: cost,  // initialCost 変更時にリソースも更新
+    });
+  },
   setSelectedMapId: (mapId) => set({ selectedMapId: mapId }),
 
   setCurrentMapData: (mapData) => {
@@ -125,22 +152,25 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
         else if (mapData.cols <= 25) { gameTimeLimit = 30 * 60; targetVP = 100; }
         else { gameTimeLimit = 40 * 60; targetVP = 150; }
     }
+    const currentInitialCost = get().initialCost;
     set({
       currentMapDataState: mapData,
       gameTimeLimit: gameTimeLimit,
       targetVictoryPoints: targetVP,
-      // Reset session-specific states when map changes
       victoryPoints: { player: 0, enemy: 0 },
       gameTimeElapsed: 0,
       gameOverMessage: null,
-      allUnitsOnMap: get().initialDeployment, // Reset units to initial deployment
+      allUnitsOnMap: get().initialDeployment,
+      playerResources: currentInitialCost, // マップ変更時にもリソースを初期コストに戻す
+      enemyResources: currentInitialCost,  // マップ変更時にもリソースを初期コストに戻す
     });
   },
 
   setInitialDeployment: (deploymentConfig, unitsDataMap) => {
     const placedUnits: PlacedUnit[] = deploymentConfig.map((depUnit, index) => {
       const unitDef = unitsDataMap.get(depUnit.unitId);
-      const ownerType = index % 2 === 0 ? 'player' : 'enemy'; // Test: alternate owner
+      // ownerOverride があればそれを使用、なければ交互に割り当て (テスト用)
+      const ownerType = depUnit.ownerOverride || (index % 2 === 0 ? 'player' : 'enemy');
       return {
         instanceId: `${depUnit.unitId}_${ownerType}_${Date.now()}_${index}_${Math.random().toString(16).slice(2)}`,
         unitId: depUnit.unitId,
@@ -149,7 +179,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
         position: depUnit.position,
         currentHp: unitDef?.stats.hp || 0,
         owner: ownerType,
-        orientation: ownerType === 'player' ? 0 : 180, // Example: 0 for right, 180 for left
+        orientation: ownerType === 'player' ? 0 : 180,
         isTurning: false,
         isMoving: false,
         moveTargetPosition: null,
@@ -160,7 +190,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
         lastAttackTimeHE: undefined,
         lastAttackTimeAP: undefined,
         justHit: false,
-        hitTimestamp: 0,
+        hitTimestamp: undefined,
         productionQueue: null,
       };
     });
@@ -180,9 +210,11 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
 
   addUnitToMap: (unit) => set(state => ({ allUnitsOnMap: [...state.allUnitsOnMap, unit] })),
 
-  removeUnitFromMap: (instanceId) =>
+  removeUnitFromMap: (instanceId) => // ユニットを完全に削除するのではなく、statusを'destroyed'にする方が、後処理や判定に便利
     set(state => ({
-      allUnitsOnMap: state.allUnitsOnMap.filter(u => u.instanceId !== instanceId),
+      allUnitsOnMap: state.allUnitsOnMap.map(u =>
+        u.instanceId === instanceId ? { ...u, status: 'destroyed', currentHp: 0 } : u
+      ),
     })),
 
   setGameOver: (message) => set({ gameOverMessage: message }),
@@ -202,20 +234,79 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
     set(state => ({
       victoryPoints: {
         ...state.victoryPoints,
-        [player]: state.victoryPoints[player] + points,
+        [player]: Math.max(0, state.victoryPoints[player] + points), // 0未満にならないように
       },
     })),
 
   incrementGameTime: () => set(state => ({ gameTimeElapsed: state.gameTimeElapsed + 1 })),
 
-  resetGameSessionState: () => set({
-    victoryPoints: { player: 0, enemy: 0 },
-    gameTimeElapsed: 0,
-    gameOverMessage: null,
-    allUnitsOnMap: get().initialDeployment, // Reset units to the initial deployment of the current map
-    // currentMapDataState should ideally be reset or reloaded when a new game starts,
-    // which is handled by setCurrentMapData.
-  }),
+  resetGameSessionState: () => {
+    const currentInitialCost = get().initialCost;
+    set({
+        victoryPoints: { player: 0, enemy: 0 },
+        gameTimeElapsed: 0,
+        gameOverMessage: null,
+        allUnitsOnMap: get().initialDeployment, // initialDeployment自体はマップ選択時に設定される想定
+        playerResources: currentInitialCost,
+        enemyResources: currentInitialCost,
+        // currentMapDataState は setCurrentMapData でリセットされるので、ここでは触らない
+    });
+  },
+
+  setPlayerResources: (amount) => set({ playerResources: amount }),
+  addPlayerResources: (amount) => set(state => ({ playerResources: state.playerResources + amount })),
+  setEnemyResources: (amount) => set({ enemyResources: amount }),
+  addEnemyResources: (amount) => set(state => ({ enemyResources: state.enemyResources + amount })),
+
+  startUnitProduction: (commanderInstanceId, unitIdToProduce, owner) => {
+    const commander = get().allUnitsOnMap.find(u => u.instanceId === commanderInstanceId);
+    const unitDef = UNITS_MAP.get(unitIdToProduce);
+    let currentResources: number;
+    let addResourcesAction: (amount: number) => void;
+
+    if (owner === 'player') {
+      currentResources = get().playerResources;
+      addResourcesAction = get().addPlayerResources;
+    } else {
+      currentResources = get().enemyResources;
+      addResourcesAction = get().addEnemyResources;
+    }
+
+    if (!commander || commander.owner !== owner) return { success: false, message: "Invalid commander or owner." };
+    if (!unitDef) return { success: false, message: "Invalid unit to produce." };
+    if (commander.productionQueue) return { success: false, message: "Commander is already producing." };
+    if (currentResources < unitDef.cost) return { success: false, message: "Not enough resources." };
+
+    const productionTimeMs = unitDef.productionTime * 1000;
+    addResourcesAction(-unitDef.cost); // リソースを消費
+
+    set(state => ({
+      allUnitsOnMap: state.allUnitsOnMap.map(u =>
+        u.instanceId === commanderInstanceId
+          ? {
+              ...u,
+              productionQueue: {
+                unitIdToProduce,
+                productionCost: unitDef.cost,
+                timeLeftMs: productionTimeMs,
+                originalProductionTimeMs: productionTimeMs,
+              },
+            }
+          : u
+      ),
+    }));
+    return { success: true, message: `Started producing ${unitDef.name} for ${owner}` };
+  },
+
+  clearCommanderProductionQueue: (commanderInstanceId: string) => {
+    set(state => ({
+      allUnitsOnMap: state.allUnitsOnMap.map(u =>
+        u.instanceId === commanderInstanceId
+          ? { ...u, productionQueue: null }
+          : u
+      ),
+    }));
+  },
 }));
 
 // 定数として選択肢をエクスポート
