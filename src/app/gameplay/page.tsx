@@ -10,7 +10,7 @@ import GameplayHexGrid from '@/components/game/GameplayHexGrid';
 import { ALL_MAPS_DATA } from '@/gameData/maps';
 import type { MapData } from '@/types/map';
 import { UNITS_MAP } from '@/gameData/units';
-import { hexDistance, logicalToAxial, getHexLinePath } from '@/lib/hexUtils';
+import { hexDistance, logicalToAxial, getHexLinePath } from '@/lib/hexUtils'; // getHexLinePath を追加
 import { hasLineOfSight, calculateDamage } from '@/lib/battleUtils';
 
 function GameplayContent() {
@@ -20,7 +20,7 @@ function GameplayContent() {
 
   const storeInitialCost = useGameSettingsStore(state => state.initialCost);
   const selectedMapIdFromStore = useGameSettingsStore(state => state.selectedMapId);
-  const allUnitsOnMap = useGameSettingsStore(state => state.allUnitsOnMap); // ストアからユニットリストを取得
+  const allUnitsOnMap = useGameSettingsStore(state => state.allUnitsOnMap);
   const updateUnitOnMap = useGameSettingsStore(state => state.updateUnitOnMap);
   const setAllUnitsOnMapDirectly = useGameSettingsStore(state => state.setAllUnitsOnMap);
 
@@ -32,6 +32,8 @@ function GameplayContent() {
   const [selectedUnitInstanceId, setSelectedUnitInstanceId] = useState<string | null>(null);
   const [detailedSelectedUnitInfo, setDetailedSelectedUnitInfo] = useState<PlacedUnit | null>(null);
   const [attackTargetInstanceId, setAttackTargetInstanceId] = useState<string | null>(null);
+  const [attackingVisuals, setAttackingVisuals] = useState<{ attackerId: string, targetId: string, weaponType: 'HE' | 'AP' }[]>([]);
+
 
   const COST_REVENUE_INTERVAL = 10000;
   const COST_REVENUE_AMOUNT = 50;
@@ -95,8 +97,9 @@ function GameplayContent() {
     const tickRate = 100;
     const unitProcessInterval = setInterval(() => {
         const currentTime = Date.now();
-        // allUnitsOnMap はこの useEffect の依存配列に含まれているため、常に最新のものが使われる
-        allUnitsOnMap.forEach(unit => {
+        const currentUnitsFromStore = useGameSettingsStore.getState().allUnitsOnMap;
+
+        currentUnitsFromStore.forEach(unit => {
             if (!unit) return;
             const unitDef = UNITS_MAP.get(unit.unitId);
             if (!unitDef) return;
@@ -174,7 +177,7 @@ function GameplayContent() {
                     return;
                 }
 
-                const targetUnit = allUnitsOnMap.find(u => u.instanceId === unit.attackTargetInstanceId);
+                const targetUnit = currentUnitsFromStore.find(u => u.instanceId === unit.attackTargetInstanceId);
                 if (!targetUnit) {
                     updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null, isTurning: false, isMoving: false });
                     return;
@@ -193,7 +196,7 @@ function GameplayContent() {
                     return;
                 }
 
-                if (!hasLineOfSight(unit, targetUnit, currentMapData, allUnitsOnMap)) {
+                if (!hasLineOfSight(unit, targetUnit, currentMapData, currentUnitsFromStore)) {
                     console.log(`${unit.name} to ${targetUnit.name}: LoS blocked!`);
                     updateUnitOnMap(unit.instanceId, { status: 'aiming' });
                     return;
@@ -211,57 +214,62 @@ function GameplayContent() {
                 }
 
                 if (!weaponChoice) {
-                    updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null });
+                    updateUnitOnMap(unit.instanceId, { status: 'aiming', attackTargetInstanceId: targetUnit.instanceId }); // 射程外なら照準し続ける（追跡は別途）
                     return;
                 }
 
-                const attackIntervalMs = weaponChoice.stats.attackInterval * 1000;
-                const lastAttackTime = weaponChoice.type === 'HE' ? unit.lastAttackTimeHE : unit.lastAttackTimeAP;
-                const currentStatusIsAttacking = unit.status === `attacking_${weaponChoice.type.toLowerCase()}`;
-                const currentStatusIsReloading = unit.status === `reloading_${weaponChoice.type.toLowerCase()}`;
+                // 攻撃実行状態の場合 (attacking_he or attacking_ap)
+                if (unit.status === `attacking_${weaponChoice.type.toLowerCase()}`) {
+                    console.log(`${unit.name} EXECUTES ${weaponChoice.type} attack on ${targetUnit.name}!`);
+                    const visualEffect = { attackerId: unit.instanceId, targetId: targetUnit.instanceId, weaponType: weaponChoice.type };
+                    setAttackingVisuals(prev => [...prev, visualEffect]);
+                    setTimeout(() => {
+                        setAttackingVisuals(prev => prev.filter(v => v.attackerId !== visualEffect.attackerId || v.targetId !== visualEffect.targetId));
+                    }, 200);
 
-                if (unit.status === 'aiming' || (!lastAttackTime || currentTime - lastAttackTime >= attackIntervalMs) ) {
-                    if (!currentStatusIsAttacking) {
-                        console.log(`${unit.name} fires ${weaponChoice.type} at ${targetUnit.name}!`);
-                        const targetDef = UNITS_MAP.get(targetUnit.unitId);
-                        if (targetDef) {
-                            const damageResult = calculateDamage(unitDef, weaponChoice.type, targetDef);
-                            const newTargetHp = Math.max(0, targetUnit.currentHp - damageResult.damageDealt);
-                            console.log(
-                                ` -> Damage: ${damageResult.damageDealt} (Penetrated: ${damageResult.didPenetrate}). ${targetUnit.name} HP: ${targetUnit.currentHp} -> ${newTargetHp}`
-                            );
+                    const targetDef = UNITS_MAP.get(targetUnit.unitId);
+                    if (targetDef) {
+                        const damageResult = calculateDamage(unitDef, weaponChoice.type, targetDef);
+                        const newTargetHp = Math.max(0, targetUnit.currentHp - damageResult.damageDealt);
+                        console.log(` -> Damage: ${damageResult.damageDealt} (Penetrated: ${damageResult.didPenetrate}). ${targetUnit.name} HP: ${targetUnit.currentHp} -> ${newTargetHp}`);
 
-                            if (newTargetHp <= 0) {
-                                console.log(`${targetUnit.name} destroyed!`);
-                                const remainingUnits = allUnitsOnMap.filter(u => u.instanceId !== targetUnit.instanceId);
-                                setAllUnitsOnMapDirectly(remainingUnits);
-                                updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null });
-                            } else {
-                                updateUnitOnMap(targetUnit.instanceId, { currentHp: newTargetHp });
-                                updateUnitOnMap(unit.instanceId, {
-                                    status: weaponChoice.type === 'HE' ? 'reloading_he' : 'reloading_ap',
-                                    [weaponChoice.type === 'HE' ? 'lastAttackTimeHE' : 'lastAttackTimeAP']: currentTime
-                                });
-                            }
+                        if (newTargetHp <= 0) {
+                            console.log(`${targetUnit.name} destroyed!`);
+                            const remainingUnits = currentUnitsFromStore.filter(u => u.instanceId !== targetUnit.instanceId);
+                            setAllUnitsOnMapDirectly(remainingUnits);
+                            updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null, lastAttackTimeAP: undefined, lastAttackTimeHE: undefined });
                         } else {
-                             updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null });
+                            updateUnitOnMap(targetUnit.instanceId, { currentHp: newTargetHp });
+                            updateUnitOnMap(unit.instanceId, {
+                                status: weaponChoice.type === 'HE' ? 'reloading_he' : 'reloading_ap',
+                                [weaponChoice.type === 'HE' ? 'lastAttackTimeHE' : 'lastAttackTimeAP']: currentTime
+                            });
                         }
+                    } else {
+                         updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null });
                     }
-                } else if (lastAttackTime && currentTime - lastAttackTime < attackIntervalMs && !currentStatusIsReloading) {
-                     if (!currentStatusIsReloading) {
-                        updateUnitOnMap(unit.instanceId, { status: weaponChoice.type === 'HE' ? 'reloading_he' : 'reloading_ap' });
-                     }
+                }
+                // リロード中または照準中で、攻撃間隔がOKになった場合
+                else if (unit.status === 'aiming' || unit.status === `reloading_${weaponChoice.type.toLowerCase()}`) {
+                    const attackIntervalMs = weaponChoice.stats.attackInterval * 1000;
+                    const lastAttackTime = weaponChoice.type === 'HE' ? unit.lastAttackTimeHE : unit.lastAttackTimeAP;
+
+                    if (!lastAttackTime || currentTime - lastAttackTime >= attackIntervalMs) {
+                        // 攻撃間隔OK、攻撃実行状態へ
+                        updateUnitOnMap(unit.instanceId, { status: weaponChoice.type === 'HE' ? 'attacking_he' : 'attacking_ap' });
+                    }
+                    // else まだ攻撃間隔中なら現在の状態 (aiming or reloading) のまま
                 }
             }
         });
     }, tickRate);
     return () => clearInterval(unitProcessInterval);
-  }, [allUnitsOnMap, updateUnitOnMap, setAllUnitsOnMapDirectly, currentMapData]);
+  }, [updateUnitOnMap, setAllUnitsOnMapDirectly, currentMapData]);
 
   const handleAttackCommand = useCallback((targetUnit: PlacedUnit) => {
     if (!selectedUnitInstanceId) return;
-    // const currentUnits = useGameSettingsStore.getState().allUnitsOnMap; // この関数内ではallUnitsOnMapをpropsやstateから取るべきだが、依存配列の関係でgetStateを使う
-    const attacker = allUnitsOnMap.find(u => u.instanceId === selectedUnitInstanceId);
+    const currentUnits = useGameSettingsStore.getState().allUnitsOnMap;
+    const attacker = currentUnits.find(u => u.instanceId === selectedUnitInstanceId);
     const attackerDef = attacker ? UNITS_MAP.get(attacker.unitId) : null;
 
     if (attacker && attackerDef && targetUnit) {
@@ -296,14 +304,14 @@ function GameplayContent() {
         }
         setAttackTargetInstanceId(targetUnit.instanceId);
     }
-  }, [selectedUnitInstanceId, allUnitsOnMap, updateUnitOnMap, initiateMove]); // allUnitsOnMap を依存配列に追加
+  }, [selectedUnitInstanceId, updateUnitOnMap, initiateMove]);
 
   const handleHexClickInGame = useCallback((q: number, r: number, logicalX: number, logicalY: number, unitOnHex?: PlacedUnit, event?: React.MouseEvent) => {
-    // const currentUnits = useGameSettingsStore.getState().allUnitsOnMap; // allUnitsOnMap は props or state から
+    const currentUnits = useGameSettingsStore.getState().allUnitsOnMap;
     if (event?.button === 2) {
       event.preventDefault();
       if (selectedUnitInstanceId) {
-        const selectedUnit = allUnitsOnMap.find(u => u.instanceId === selectedUnitInstanceId);
+        const selectedUnit = currentUnits.find(u => u.instanceId === selectedUnitInstanceId);
         if (selectedUnit) {
           initiateMove(selectedUnit, logicalX, logicalY);
         }
@@ -313,7 +321,7 @@ function GameplayContent() {
     }
 
     if (event?.ctrlKey && unitOnHex && selectedUnitInstanceId) {
-      const attacker = allUnitsOnMap.find(u => u.instanceId === selectedUnitInstanceId);
+      const attacker = currentUnits.find(u => u.instanceId === selectedUnitInstanceId);
       if (attacker && attacker.instanceId !== unitOnHex.instanceId) {
         handleAttackCommand(unitOnHex);
       }
@@ -324,7 +332,7 @@ function GameplayContent() {
       setSelectedUnitInstanceId(null);
       setAttackTargetInstanceId(null);
     }
-  }, [selectedUnitInstanceId, allUnitsOnMap, initiateMove, handleAttackCommand]); // allUnitsOnMap を依存配列に追加
+  }, [selectedUnitInstanceId, initiateMove, handleAttackCommand]);
 
   const handlePause = () => { alert("Game Paused (Pause Menu to be implemented)"); };
   const handleSurrender = () => {
@@ -334,12 +342,12 @@ function GameplayContent() {
 
   useEffect(() => {
     if (selectedUnitInstanceId) {
-        const unit = allUnitsOnMap.find(u => u.instanceId === selectedUnitInstanceId); // allUnitsOnMap は最新
+        const unit = useGameSettingsStore.getState().allUnitsOnMap.find(u => u.instanceId === selectedUnitInstanceId);
         setDetailedSelectedUnitInfo(unit || null);
     } else {
         setDetailedSelectedUnitInfo(null);
     }
-  }, [selectedUnitInstanceId, allUnitsOnMap]);
+  }, [selectedUnitInstanceId, allUnitsOnMap]); // allUnitsOnMap を依存配列に追加
 
   return (
     <div className="flex flex-col h-screen bg-gray-900 text-white overflow-hidden">
@@ -393,7 +401,7 @@ function GameplayContent() {
                   {detailedSelectedUnitInfo.isMoving && detailedSelectedUnitInfo.moveTargetPosition && <p className="text-green-400">Moving to ({detailedSelectedUnitInfo.moveTargetPosition.x},{detailedSelectedUnitInfo.moveTargetPosition.y})</p>}
                   {detailedSelectedUnitInfo.attackTargetInstanceId &&
                     (() => {
-                        const target = allUnitsOnMap.find(u=>u.instanceId === detailedSelectedUnitInfo.attackTargetInstanceId);
+                        const target = useGameSettingsStore.getState().allUnitsOnMap.find(u=>u.instanceId === detailedSelectedUnitInfo.attackTargetInstanceId);
                         return <p className="text-red-400">Targeting: {target?.name || 'Unknown'}</p>;
                     })()
                   }
@@ -423,9 +431,10 @@ function GameplayContent() {
           <GameplayHexGrid
             mapData={currentMapData}
             hexSize={26}
-            placedUnits={allUnitsOnMap} // ストアから取得した最新のユニットリストを渡す
+            placedUnits={allUnitsOnMap} // ストアから取得した最新のリストを渡す
             onHexClick={handleHexClickInGame}
             selectedUnitInstanceId={selectedUnitInstanceId}
+            attackingPairs={attackingVisuals}
           />
           <div className="absolute bottom-4 right-4 w-48 h-36 bg-green-800 border-2 border-gray-600 rounded shadow-xl p-1">
             <p className="text-xs text-center text-green-300">Mini-map</p>
