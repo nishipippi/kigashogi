@@ -10,7 +10,7 @@ import GameplayHexGrid from '@/components/game/GameplayHexGrid';
 import { ALL_MAPS_DATA } from '@/gameData/maps';
 import type { MapData } from '@/types/map';
 import { UNITS_MAP } from '@/gameData/units';
-import { hexDistance, logicalToAxial, getHexLinePath } from '@/lib/hexUtils'; // getHexLinePath を追加
+import { hexDistance, logicalToAxial, getHexLinePath } from '@/lib/hexUtils';
 import { hasLineOfSight, calculateDamage } from '@/lib/battleUtils';
 
 function GameplayContent() {
@@ -23,8 +23,14 @@ function GameplayContent() {
   const allUnitsOnMap = useGameSettingsStore(state => state.allUnitsOnMap);
   const updateUnitOnMap = useGameSettingsStore(state => state.updateUnitOnMap);
   const setAllUnitsOnMapDirectly = useGameSettingsStore(state => state.setAllUnitsOnMap);
+  const gameOverMessage = useGameSettingsStore(state => state.gameOverMessage);
+  const setGameOver = useGameSettingsStore(state => state.setGameOver);
+const setMapDataInStore = useGameSettingsStore(state => state.setCurrentMapData);
+  const updateStrategicPointOwner = useGameSettingsStore(state => state.updateStrategicPointOwner);
+  const currentMapDataFromStore = useGameSettingsStore(state => state.currentMapDataState);
 
-  const [currentMapData, setCurrentMapData] = useState<MapData | null>(null);
+
+  const [localCurrentMapData, setLocalCurrentMapData] = useState<MapData | null>(null); // ローカルでの描画用
   const [gameTime, setGameTime] = useState(0);
   const [resources, setResources] = useState(storeInitialCost);
   const [victoryPoints, setVictoryPoints] = useState({ player: 0, enemy: 0 });
@@ -41,22 +47,28 @@ function GameplayContent() {
   useEffect(() => {
     const mapIdToLoad = mapIdParam || selectedMapIdFromStore;
     if (mapIdToLoad && ALL_MAPS_DATA[mapIdToLoad]) {
-      setCurrentMapData(ALL_MAPS_DATA[mapIdToLoad]);
+      const mapData = ALL_MAPS_DATA[mapIdToLoad];
+      setLocalCurrentMapData(mapData);
+      setMapDataInStore(mapData);
     } else {
       console.warn(`Map with id "${mapIdToLoad}" not found.`);
+      setMapDataInStore(null);
+      setLocalCurrentMapData(null);
     }
-  }, [mapIdParam, selectedMapIdFromStore]);
+  }, [mapIdParam, selectedMapIdFromStore, setMapDataInStore]);
 
   useEffect(() => {
     setResources(storeInitialCost);
   }, [storeInitialCost]);
 
   useEffect(() => {
+    if (gameOverMessage) return; // ゲームオーバーならタイマー類は停止
+
     const timer = setInterval(() => setGameTime(prev => prev + 1), 1000);
     const revenueTimer = setInterval(() => setResources(prev => prev + COST_REVENUE_AMOUNT), COST_REVENUE_INTERVAL);
     const vpTimer = setInterval(() => setVictoryPoints(prev => ({ player: prev.player + 1, enemy: prev.enemy + 0 })), 30000);
     return () => { clearInterval(timer); clearInterval(revenueTimer); clearInterval(vpTimer); };
-  }, []);
+  }, [gameOverMessage]);
 
   const initiateMove = useCallback((unitToMove: PlacedUnit, targetX: number, targetY: number) => {
     const unitDef = UNITS_MAP.get(unitToMove.unitId);
@@ -64,7 +76,7 @@ function GameplayContent() {
 
     const dx = targetX - unitToMove.position.x;
     const dy = targetY - unitToMove.position.y;
-    let newTargetOrientationDeg = unitToMove.orientation;
+    let newTargetOrientationDeg = unitToMove.orientation; // 0度=右、反時計回り
     if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
         const angleRad = Math.atan2(dy, dx);
         newTargetOrientationDeg = (angleRad * (180 / Math.PI) + 360) % 360;
@@ -96,13 +108,31 @@ function GameplayContent() {
   useEffect(() => {
     const tickRate = 100;
     const unitProcessInterval = setInterval(() => {
+        if (useGameSettingsStore.getState().gameOverMessage) {
+            clearInterval(unitProcessInterval);
+            return;
+        }
         const currentTime = Date.now();
         const currentUnitsFromStore = useGameSettingsStore.getState().allUnitsOnMap;
+        const currentMapDataForLoop = useGameSettingsStore.getState().currentMapDataState; // ループ内で最新のマップ状態を参照
+
+        let playerCommandersAlive = 0;
+        let enemyCommandersAlive = 0; // 将来の敵AI用
 
         currentUnitsFromStore.forEach(unit => {
             if (!unit) return;
             const unitDef = UNITS_MAP.get(unit.unitId);
             if (!unitDef) return;
+
+            if (unitDef.isCommander) {
+                if (unit.owner === 'player') playerCommandersAlive++;
+                else if (unit.owner === 'enemy') enemyCommandersAlive++;
+            }
+
+            // 被弾エフェクトのリセット
+            if (unit.justHit && unit.hitTimestamp && currentTime - unit.hitTimestamp > 300) {
+                updateUnitOnMap(unit.instanceId, { justHit: false });
+            }
 
             // 旋回処理
             if (unit.isTurning && unit.targetOrientation !== undefined) {
@@ -134,6 +164,7 @@ function GameplayContent() {
             else if (unit.isMoving && unit.currentPath && unit.currentPath.length > 0 && unit.timeToNextHex !== null && unit.timeToNextHex !== undefined) {
                 let newTimeToNextHex = unit.timeToNextHex - tickRate;
                 if (newTimeToNextHex <= 0) {
+                    const oldPosition = unit.position; // 移動前の位置
                     const nextPosition = unit.currentPath[0];
                     const remainingPath = unit.currentPath.slice(1);
                     let newOrientation = unit.orientation;
@@ -167,6 +198,19 @@ function GameplayContent() {
                         });
                         console.log(`Unit ${unit.instanceId} arrived at final destination (${nextPosition.x}, ${nextPosition.y})`);
                     }
+
+                    // 移動完了後、移動元が占領していた戦略拠点だったかチェック
+                    if (currentMapDataForLoop?.strategicPoints) {
+                        const spAtOldPosition = currentMapDataForLoop.strategicPoints.find(
+                            sp => sp.x === oldPosition.x && sp.y === oldPosition.y
+                        );
+                        if (spAtOldPosition && spAtOldPosition.owner === unit.owner) { // 指揮官でなくても、そのユニットが所有者なら解除
+                             // (指揮官のみ占領ルールなら unitDef.isCommander チェックも)
+                            console.log(`Unit ${unit.name} left strategic point ${spAtOldPosition.id}. Setting to neutral.`);
+                            updateStrategicPointOwner(spAtOldPosition.id, 'neutral');
+                        }
+                    }
+
                 } else {
                     updateUnitOnMap(unit.instanceId, { timeToNextHex: newTimeToNextHex });
                 }
@@ -176,7 +220,6 @@ function GameplayContent() {
                 if (unit.isTurning || unit.isMoving) {
                     return;
                 }
-
                 const targetUnit = currentUnitsFromStore.find(u => u.instanceId === unit.attackTargetInstanceId);
                 if (!targetUnit) {
                     updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null, isTurning: false, isMoving: false });
@@ -196,7 +239,7 @@ function GameplayContent() {
                     return;
                 }
 
-                if (!hasLineOfSight(unit, targetUnit, currentMapData, currentUnitsFromStore)) {
+                if (!hasLineOfSight(unit, targetUnit, currentMapDataForLoop, currentUnitsFromStore)) {
                     console.log(`${unit.name} to ${targetUnit.name}: LoS blocked!`);
                     updateUnitOnMap(unit.instanceId, { status: 'aiming' });
                     return;
@@ -214,11 +257,10 @@ function GameplayContent() {
                 }
 
                 if (!weaponChoice) {
-                    updateUnitOnMap(unit.instanceId, { status: 'aiming', attackTargetInstanceId: targetUnit.instanceId }); // 射程外なら照準し続ける（追跡は別途）
+                    updateUnitOnMap(unit.instanceId, { status: 'aiming', attackTargetInstanceId: targetUnit.instanceId });
                     return;
                 }
 
-                // 攻撃実行状態の場合 (attacking_he or attacking_ap)
                 if (unit.status === `attacking_${weaponChoice.type.toLowerCase()}`) {
                     console.log(`${unit.name} EXECUTES ${weaponChoice.type} attack on ${targetUnit.name}!`);
                     const visualEffect = { attackerId: unit.instanceId, targetId: targetUnit.instanceId, weaponType: weaponChoice.type };
@@ -239,7 +281,7 @@ function GameplayContent() {
                             setAllUnitsOnMapDirectly(remainingUnits);
                             updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null, lastAttackTimeAP: undefined, lastAttackTimeHE: undefined });
                         } else {
-                            updateUnitOnMap(targetUnit.instanceId, { currentHp: newTargetHp });
+                            updateUnitOnMap(targetUnit.instanceId, { currentHp: newTargetHp, justHit: true, hitTimestamp: currentTime });
                             updateUnitOnMap(unit.instanceId, {
                                 status: weaponChoice.type === 'HE' ? 'reloading_he' : 'reloading_ap',
                                 [weaponChoice.type === 'HE' ? 'lastAttackTimeHE' : 'lastAttackTimeAP']: currentTime
@@ -249,22 +291,29 @@ function GameplayContent() {
                          updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null });
                     }
                 }
-                // リロード中または照準中で、攻撃間隔がOKになった場合
                 else if (unit.status === 'aiming' || unit.status === `reloading_${weaponChoice.type.toLowerCase()}`) {
                     const attackIntervalMs = weaponChoice.stats.attackInterval * 1000;
                     const lastAttackTime = weaponChoice.type === 'HE' ? unit.lastAttackTimeHE : unit.lastAttackTimeAP;
-
                     if (!lastAttackTime || currentTime - lastAttackTime >= attackIntervalMs) {
-                        // 攻撃間隔OK、攻撃実行状態へ
                         updateUnitOnMap(unit.instanceId, { status: weaponChoice.type === 'HE' ? 'attacking_he' : 'attacking_ap' });
                     }
-                    // else まだ攻撃間隔中なら現在の状態 (aiming or reloading) のまま
                 }
             }
         });
+
+        // 司令官全滅チェック (ループの外、ただしインターバル内で)
+        const anyPlayerUnitsExist = currentUnitsFromStore.some(u => u.owner === 'player');
+        const anyEnemyUnitsExist = currentUnitsFromStore.some(u => u.owner === 'enemy'); // 将来の敵AI用
+
+        if (anyPlayerUnitsExist && playerCommandersAlive === 0 && !useGameSettingsStore.getState().gameOverMessage) {
+            setGameOver("Enemy Wins! (Player Commander Lost)");
+        } else if (anyEnemyUnitsExist && enemyCommandersAlive === 0 && !useGameSettingsStore.getState().gameOverMessage) {
+            setGameOver("Player Wins! (Enemy Commander Lost)");
+        }
+
     }, tickRate);
     return () => clearInterval(unitProcessInterval);
-  }, [updateUnitOnMap, setAllUnitsOnMapDirectly, currentMapData]);
+  }, [updateUnitOnMap, setAllUnitsOnMapDirectly, setGameOver, currentMapDataFromStore]); // currentMapDataFromStore を追加
 
   const handleAttackCommand = useCallback((targetUnit: PlacedUnit) => {
     if (!selectedUnitInstanceId) return;
@@ -283,7 +332,7 @@ function GameplayContent() {
 
         const dx = targetUnit.position.x - attacker.position.x;
         const dy = targetUnit.position.y - attacker.position.y;
-        let newTargetOrientationDeg = attacker.orientation;
+        let newTargetOrientationDeg = attacker.orientation; // 0度=右
         if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
             const angleRad = Math.atan2(dy, dx);
             newTargetOrientationDeg = (angleRad * (180 / Math.PI) + 360) % 360;
@@ -308,7 +357,7 @@ function GameplayContent() {
 
   const handleHexClickInGame = useCallback((q: number, r: number, logicalX: number, logicalY: number, unitOnHex?: PlacedUnit, event?: React.MouseEvent) => {
     const currentUnits = useGameSettingsStore.getState().allUnitsOnMap;
-    if (event?.button === 2) {
+    if (event?.button === 2) { // Right click
       event.preventDefault();
       if (selectedUnitInstanceId) {
         const selectedUnit = currentUnits.find(u => u.instanceId === selectedUnitInstanceId);
@@ -320,15 +369,16 @@ function GameplayContent() {
       return;
     }
 
-    if (event?.ctrlKey && unitOnHex && selectedUnitInstanceId) {
+    // Left click
+    if (event?.ctrlKey && unitOnHex && selectedUnitInstanceId) { // Ctrl + Left click: Attack
       const attacker = currentUnits.find(u => u.instanceId === selectedUnitInstanceId);
       if (attacker && attacker.instanceId !== unitOnHex.instanceId) {
         handleAttackCommand(unitOnHex);
       }
-    } else if (unitOnHex) {
+    } else if (unitOnHex) { // Normal Left click: Select unit
       setSelectedUnitInstanceId(unitOnHex.instanceId);
       setAttackTargetInstanceId(null);
-    } else {
+    } else { // Click empty hex: Deselect
       setSelectedUnitInstanceId(null);
       setAttackTargetInstanceId(null);
     }
@@ -337,7 +387,8 @@ function GameplayContent() {
   const handlePause = () => { alert("Game Paused (Pause Menu to be implemented)"); };
   const handleSurrender = () => {
     alert("Surrendered (Results screen to be implemented)");
-    router.push(`/results?status=surrender&mapId=${mapIdParam}`);
+    setGameOver("Player Surrendered"); // ゲームオーバー状態をセット
+    // router.push(`/results?status=surrender&mapId=${mapIdParam}`); // この遷移はgameOverMessageのuseEffectで行う
   };
 
   useEffect(() => {
@@ -347,14 +398,32 @@ function GameplayContent() {
     } else {
         setDetailedSelectedUnitInfo(null);
     }
-  }, [selectedUnitInstanceId, allUnitsOnMap]); // allUnitsOnMap を依存配列に追加
+  }, [selectedUnitInstanceId, allUnitsOnMap]); // allUnitsOnMap はストアの変更を検知するフックから取得したものを使う
+
+  useEffect(() => {
+    if (gameOverMessage) {
+        console.log("Game Over:", gameOverMessage);
+        setTimeout(() => {
+            let status = "draw";
+            if (gameOverMessage.includes("Player Wins")) status = "win";
+            else if (gameOverMessage.includes("Enemy Wins") || gameOverMessage.includes("Surrendered")) status = "lose";
+            router.push(`/results?status=${status}&mapId=${mapIdParam}&reason=${encodeURIComponent(gameOverMessage)}`);
+        }, 2000);
+    }
+  }, [gameOverMessage, router, mapIdParam]);
+
 
   return (
     <div className="flex flex-col h-screen bg-gray-900 text-white overflow-hidden">
+      {gameOverMessage && (
+          <div className="absolute inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
+              <h1 className="text-4xl font-bold text-yellow-400 animate-pulse">{gameOverMessage}</h1>
+          </div>
+      )}
       <header className="h-16 bg-black bg-opacity-50 p-3 flex justify-between items-center shadow-lg z-10">
         <div className="flex items-center space-x-6">
           <div>KigaShogi</div>
-          <div>Map: <span className="font-semibold">{currentMapData?.name || mapIdParam || 'N/A'}</span></div>
+          <div>Map: <span className="font-semibold">{currentMapDataFromStore?.name || mapIdParam || 'N/A'}</span></div>
           <div>Time: <span className="font-semibold">{Math.floor(gameTime / 60)}:{(gameTime % 60).toString().padStart(2, '0')}</span></div>
         </div>
         <div className="flex items-center space-x-4">
@@ -429,9 +498,9 @@ function GameplayContent() {
 
         <section className="flex-grow bg-gray-700 flex items-center justify-center relative">
           <GameplayHexGrid
-            mapData={currentMapData}
+            mapData={currentMapDataFromStore}
             hexSize={26}
-            placedUnits={allUnitsOnMap} // ストアから取得した最新のリストを渡す
+            placedUnits={allUnitsOnMap}
             onHexClick={handleHexClickInGame}
             selectedUnitInstanceId={selectedUnitInstanceId}
             attackingPairs={attackingVisuals}

@@ -1,50 +1,43 @@
 // src/types/map.ts
+
+// 各タイルの詳細情報 (将来的拡張用)
 export interface MapTile {
-  x: number;
-  y: number;
+  x: number; // 論理X座標
+  y: number; // 論理Y座標
   isDeployable: boolean; // このタイルに配置可能か
-  terrainType?: string; // 将来的に地形の種類も追加
+  terrainType?: 'plains' | 'forest' | 'hill' | 'road' | 'urban' | 'water'; // 地形の種類
+  // movementCost?: number; // 地形ごとの移動コスト (将来的に)
+  // coverBonus?: number;   // 地形からの防御ボーナス (将来的に)
+  // sightModifier?: number; // 地形による視界修正 (将来的に)
 }
 
+// 戦略拠点の情報
+export interface StrategicPoint {
+  id: string; // 拠点の一意なID (例: "sp1", "alpha_base")
+  x: number;  // 論理X座標
+  y: number;  // 論理Y座標
+  name?: string; // 拠点の表示名 (例: "Central Hill", "Supply Depot")
+  owner?: 'player' | 'enemy' | 'neutral'; // 現在の所有者
+  captureProgress?: number; // 占領進捗 (0-100)
+  victoryPointsPerTick?: number; // この拠点を確保している場合に得られるVP/tick (将来的に)
+}
+
+// マップ全体のデータ構造
 export interface MapData {
-  id: string;
-  name: string;
-  rows: number; // マップの行数
-  cols: number; // マップの列数
-  deploymentArea: { // 仮の配置可能エリア定義 (例: 左半分)
+  id: string; // マップの一意なID
+  name: string; // マップの表示名
+  description?: string; // マップの説明文
+  rows: number; // マップの論理的な行数 (ヘックスグリッドのY方向の最大インデックス + 1)
+  cols: number; // マップの論理的な列数 (ヘックスグリッドのX方向の最大インデックス + 1)
+  deploymentArea: { // プレイヤーの初期配置可能エリア (論理座標)
     startX: number;
     startY: number;
     endX: number;
     endY: number;
   };
-  tiles?: MapTile[][]; // より詳細なタイル情報 (将来的にはこちらを使う)
+  // deploymentAreaEnemy?: { ... }; // 将来的に敵AIやPVPでの相手の配置エリア
+  strategicPoints?: StrategicPoint[]; // マップ上の戦略拠点のリスト
+  tiles?: MapTile[][]; // 各タイルの詳細情報 (将来的にはこれを行x列の2次元配列で持つ)
+                       // 例: tiles[y][x] でアクセス
+  // defaultTile?: MapTile; // 全タイルに適用されるデフォルトのタイル情報
 }
-
-export const MOCK_MAPS: Record<string, MapData> = {
-  map1: {
-    id: 'map1',
-    name: 'Crossroads',
-    rows: 10,
-    cols: 20, // 全体の盤面の論理的な列数
-    deploymentArea: {
-      startX: 0, // 論理X座標の開始 (0列目)
-      startY: 0, // 論理Y座標の開始 (0行目)
-      endX: 2,   // 論理X座標の終了 (2列目まで、つまり0,1,2の3列)
-      endY: 9,   // 論理Y座標の終了 (最後まで)
-    },
-  },
-  map2: {
-    id: 'map2',
-    name: 'Forest Siege',
-    rows: 15,
-    cols: 25,
-    deploymentArea: { startX: 0, startY: 0, endX: 2, endY: 14 },
-  },
-  map3: {
-    id: 'map3',
-    name: 'Urban Warfare',
-    rows: 20,
-    cols: 30,
-    deploymentArea: { startX: 0, startY: 0, endX: 2, endY: 19 },
-  },
-};
