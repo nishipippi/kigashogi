@@ -1,21 +1,30 @@
+/* src/app/globals.css */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  body {
+    @apply bg-gray-900 text-gray-100; /* 例: ダークテーマの背景と文字色 */
+    font-family: 'Inter', sans-serif; /* 例: Interフォント (別途読み込み設定が必要な場合あり) */
   }
+
+  /* 必要に応じて他のHTML要素の基本スタイルも設定 */
+  h1 {
+    @apply text-4xl font-bold mb-4;
+  }
+  h2 {
+    @apply text-2xl font-semibold mb-3;
+  }
+  /* ...など */
 }
 
-body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
-}
+/*
+もし 'Inter' フォントなど特定のWebフォントを使いたい場合は、
+`src/app/layout.tsx` でGoogle Fontsなどから読み込む設定が必要です。
+例:
+import { Inter } from 'next/font/google'
+const inter = Inter({ subsets: ['latin'] })
+// ...
+<body className={inter.className}>
+*/
