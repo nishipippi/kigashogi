@@ -4,33 +4,20 @@
 import Button from '@/components/ui/Button';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Suspense, useState, useEffect } from 'react';
-import { useGameSettingsStore } from '@/stores/gameSettingsStore';
-import type { UnitData } from '@/types/unit'; // UnitDataの型をインポート
-import DeploymentHexGrid from '@/components/game/DeploymentHexGrid'; // ヘックスグリッドコンポーネント
-import { MOCK_MAPS, type MapData } from '@/types/map'; // マップデータと型
+import { useGameSettingsStore, type PlacedUnit } from '@/stores/gameSettingsStore'; // PlacedUnit 型もインポート
+import type { UnitData } from '@/types/unit';
+import { ALL_UNITS, UNITS_MAP } from '@/gameData/units'; // ALL_UNITS と UNITS_MAP をインポート
+import DeploymentHexGrid from '@/components/game/DeploymentHexGrid';
+import { ALL_MAPS_DATA } from '@/gameData/maps'; // ALL_MAPS_DATA はここから
+import type { MapData } from '@/types/map';      // MapData 型はここから
 
-// DeployedUnit 型定義 (他のファイルに移動した場合はインポートに変更)
+// DeployedUnit 型 (初期配置画面内でのユニット情報)
 export interface DeployedUnit {
-  unitId: string;
+  unitId: string; // ユニット種別のID
   name: string;
   cost: number;
-  position: { x: number; y: number }; // 論理座標 (ヘックスグリッド用)
+  position: { x: number; y: number }; // 論理座標 (ヘックスグリッドのlogicalX, logicalY)
 }
-
-// 仮のユニットリストデータ (実際にはユニット定義ファイルなどから取得)
-const MOCK_UNITS: UnitData[] = [
-  { id: 'rifle_infantry', name: 'ライフル歩兵', cost: 25, icon: '👤' },
-  { id: 'light_infantry', name: '軽歩兵', cost: 40, icon: '🏃' },
-  { id: 'support_infantry', name: 'サポート歩兵', cost: 40, icon: '🛠️' },
-  { id: 'anti_tank_infantry', name: '対戦車歩兵', cost: 40, icon: '💥' },
-  { id: 'special_forces', name: '特殊部隊', cost: 100, icon: '🥷' },
-  { id: 'recon_infantry', name: '偵察歩兵', cost: 40, icon: '👀' },
-  { id: 'main_battle_tank', name: '主力戦車', cost: 200, icon: ' M ' },
-  { id: 'ifv', name: '歩兵戦闘車', cost: 80, icon: ' I ' },
-  { id: 'sp_artillery', name: '自走砲', cost: 150, icon: ' A ' },
-  { id: 'commander', name: '司令官ユニット', cost: 300, icon: ' C ', isCommander: true },
-];
-
 
 function UnitDeploymentContent() {
   const router = useRouter();
@@ -39,22 +26,20 @@ function UnitDeploymentContent() {
   const mode = searchParams.get('mode');
 
   const maxCost = useGameSettingsStore(state => state.initialCost);
-  // const playerFaction = useGameSettingsStore(state => state.playerFaction); // 必要なら使用
+  const { setInitialDeployment } = useGameSettingsStore(); // アクションを取得
 
   const [currentMapData, setCurrentMapData] = useState<MapData | null>(null);
   const [selectedUnit, setSelectedUnit] = useState<UnitData | null>(null);
   const [deployedUnits, setDeployedUnits] = useState<DeployedUnit[]>([]);
   const [currentCost, setCurrentCost] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(120); // 2 minutes for deployment
+  const [timeLeft, setTimeLeft] = useState(120);
   const [commanderDeployed, setCommanderDeployed] = useState(false);
 
   useEffect(() => {
-    if (mapIdParam && MOCK_MAPS[mapIdParam]) {
-      setCurrentMapData(MOCK_MAPS[mapIdParam]);
+    if (mapIdParam && ALL_MAPS_DATA[mapIdParam]) {
+      setCurrentMapData(ALL_MAPS_DATA[mapIdParam]);
     } else {
-      console.warn(`Map with id "${mapIdParam}" not found. Defaulting or error handling needed.`);
-      // 例: router.push('/map-selection?error=map_not_found');
-      // またはデフォルトマップを設定: setCurrentMapData(MOCK_MAPS.map1);
+      console.warn(`Map with id "${mapIdParam}" not found.`);
     }
   }, [mapIdParam]);
 
@@ -69,7 +54,10 @@ function UnitDeploymentContent() {
   useEffect(() => {
     const totalCost = deployedUnits.reduce((sum, unit) => sum + unit.cost, 0);
     setCurrentCost(totalCost);
-    setCommanderDeployed(deployedUnits.some(unit => unit.unitId === 'commander'));
+    setCommanderDeployed(deployedUnits.some(unit => {
+        const unitDef = UNITS_MAP.get(unit.unitId);
+        return unitDef?.isCommander || false;
+    }));
   }, [deployedUnits]);
 
   const handleUnitSelect = (unit: UnitData) => {
@@ -96,7 +84,9 @@ function UnitDeploymentContent() {
         alert("コスト上限を超えています！");
         return;
       }
-      if (selectedUnit.isCommander && commanderDeployed) {
+      // selectedUnit が司令官ユニットかどうかを UNITS_MAP から取得してチェック
+      const selectedUnitDef = UNITS_MAP.get(selectedUnit.id);
+      if (selectedUnitDef?.isCommander && commanderDeployed) {
         alert("司令官ユニットは既に配置されています。");
         return;
       }
@@ -121,15 +111,50 @@ function UnitDeploymentContent() {
   };
 
   const handleReady = () => {
-    if (!commanderDeployed) {
+    // 司令官ユニットが配置されているか再確認
+    const isActualCommanderDeployed = deployedUnits.some(depUnit => {
+        const unitDef = UNITS_MAP.get(depUnit.unitId);
+        return unitDef?.isCommander || false;
+    });
+
+    if (!isActualCommanderDeployed) {
       alert("司令官ユニットを配置してください！");
       return;
     }
-    console.log("Ready! Deploying units:", deployedUnits);
+
+    // deployedUnits (DeployedUnit[]) を PlacedUnit[] に変換
+    const finalDeployment: PlacedUnit[] = deployedUnits.map((depUnit, index) => {
+      const unitDef = UNITS_MAP.get(depUnit.unitId);
+      // ゲーム内で一意なインスタンスIDを生成 (例: unitType_index_random)
+      // より堅牢なID生成方法も検討可能 (例: uuid)
+      const instanceId = `${depUnit.unitId}_${index}_${Math.random().toString(16).slice(2, 7)}`;
+      return {
+        // ...depUnit, // DeployedUnitのプロパティを展開
+        instanceId: instanceId, // ユニークなインスタンスID
+        unitId: depUnit.unitId,
+        name: depUnit.name, // nameはunitDefから取る方が正確かも
+        cost: depUnit.cost, // costもunitDefから取る方が正確かも
+        position: depUnit.position,
+        currentHp: unitDef?.stats.hp || 0,
+        owner: 'player',
+        orientation: 0, // 初期向き (例: 北向き)
+      };
+    });
+
+    setInitialDeployment(finalDeployment);
+
+    console.log("Ready! Saving deployment to store:", finalDeployment);
     router.push(`/loading?mapId=${mapIdParam}&mode=${mode}`);
   };
 
-  const isCommanderMandatoryAndNotDeployed = MOCK_UNITS.find(u => u.isCommander) && !commanderDeployed;
+  // isCommanderMandatoryAndNotDeployed の判定も UNITS_MAP を使う
+  const isCommanderRequired = ALL_UNITS.some(u => u.isCommander);
+  const isActualCommanderDeployedCheck = deployedUnits.some(depUnit => {
+      const unitDef = UNITS_MAP.get(depUnit.unitId);
+      return unitDef?.isCommander || false;
+  });
+  const canProceed = isCommanderRequired ? isActualCommanderDeployedCheck : true;
+
 
   return (
     <div className="flex flex-col h-screen bg-gray-800 text-white">
@@ -139,14 +164,14 @@ function UnitDeploymentContent() {
           Time Left: <span className="font-bold">{Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}</span>
         </div>
         <div>
-          <Button href={`/map-selection?mode=${mode || 'ai'}`} variant="secondary" size="sm" className="mr-2">
+          <Button href={`/map-selection?mode=${mode}`} variant="secondary" size="sm" className="mr-2">
             Back to Map Select
           </Button>
           <Button
             onClick={handleReady}
             variant="primary"
             size="sm"
-            disabled={isCommanderMandatoryAndNotDeployed || currentCost > maxCost || timeLeft <= 0}
+            disabled={!canProceed || currentCost > maxCost || timeLeft <= 0}
           >
             Ready
           </Button>
@@ -157,23 +182,33 @@ function UnitDeploymentContent() {
         <aside className="w-1/4 bg-gray-700 p-4 rounded-lg shadow-lg overflow-y-auto">
           <h2 className="text-xl font-semibold mb-3 border-b pb-2 border-gray-600">Available Units</h2>
           <div className="space-y-2">
-            {MOCK_UNITS.map(unit => (
-              <div
-                key={unit.id}
-                onClick={() => handleUnitSelect(unit)}
-                className={`p-3 rounded-md cursor-pointer transition-all
-                            ${selectedUnit?.id === unit.id ? 'bg-blue-600 ring-2 ring-blue-400' : 'bg-gray-600 hover:bg-gray-500'}
-                            ${( (currentCost + unit.cost > maxCost && (!unit.isCommander || commanderDeployed)) || // コストオーバー (司令官配置済みなら司令官も対象)
-                               (unit.isCommander && commanderDeployed)                                          // 司令官は1体まで
-                             ) ? 'opacity-50 cursor-not-allowed' : ''}`}
-                // 司令官未配置で、選択ユニットが司令官でない場合、かつ司令官配置コストを考慮してもコストオーバーする場合も無効化するロジックも考慮可
-              >
-                <div className="flex justify-between items-center">
-                  <span className="font-medium">{unit.icon} {unit.name}</span>
-                  <span className="text-sm text-yellow-400">{unit.cost} C</span>
+            {ALL_UNITS.map(unit => {
+              const unitDef = UNITS_MAP.get(unit.id); // isCommanderチェックのために取得
+              const isUnitDisabled =
+                (currentCost + unit.cost > maxCost && (!unitDef?.isCommander || commanderDeployed)) ||
+                (unitDef?.isCommander && commanderDeployed);
+
+              return (
+                <div
+                  key={unit.id}
+                  onClick={() => {
+                    if (!isUnitDisabled) {
+                      handleUnitSelect(unit);
+                    }
+                  }}
+                  className={`p-3 rounded-md transition-all
+                              ${selectedUnit?.id === unit.id ? 'bg-blue-600 ring-2 ring-blue-400' : 'bg-gray-600 hover:bg-gray-500'}
+                              ${isUnitDisabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                  style={isUnitDisabled ? { pointerEvents: 'none' } : {}}
+                >
+                  <div className="flex justify-between items-center">
+                    <span className="font-medium">{unit.icon} {unit.name}</span>
+                    <span className="text-sm text-yellow-400">{unit.cost} C</span>
+                  </div>
+                  <p className="text-xs text-gray-300 truncate mt-1">{unit.role || unit.description}</p>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </aside>
 
@@ -183,7 +218,7 @@ function UnitDeploymentContent() {
             onHexClick={handleHexPlacement}
             deployedUnits={deployedUnits}
             selectedUnitIcon={selectedUnit?.icon}
-            hexSize={26} // この値はマップの表示に合わせて調整してください
+            hexSize={22}
           />
         </section>
 
@@ -194,7 +229,7 @@ function UnitDeploymentContent() {
               Cost: <span className={`font-bold ${currentCost > maxCost ? 'text-red-500' : 'text-green-400'}`}>{currentCost}</span> / {maxCost}
             </p>
             {currentCost > maxCost && <p className="text-sm text-red-400">Cost limit exceeded!</p>}
-            {isCommanderMandatoryAndNotDeployed && <p className="text-sm text-yellow-400">Commander unit must be deployed!</p>}
+            {isCommanderRequired && !isActualCommanderDeployedCheck && <p className="text-sm text-yellow-400">Commander unit must be deployed!</p>}
           </div>
           <h3 className="text-lg font-semibold mb-2">Deployed Units:</h3>
           <div className="flex-grow space-y-1 overflow-y-auto pr-1">

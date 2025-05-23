@@ -6,6 +6,7 @@ import Button from '@/components/ui/Button';
 import { useSearchParams, useRouter } from 'next/navigation'; // useRouterを追加
 import { Suspense } from 'react';
 import { useGameSettingsStore } from '@/stores/gameSettingsStore'; // ストアをインポート
+import { ALL_MAPS_DATA, MAP_OPTIONS } from '@/gameData/maps'; // マップデータをインポート
 
 function MapSelectionContent() {
   const searchParams = useSearchParams();
@@ -13,12 +14,6 @@ function MapSelectionContent() {
   const mode = searchParams.get('mode');
 
   const { setSelectedMapId, selectedMapId: currentSelectedMapId } = useGameSettingsStore(); // ストアからアクションと現在のマップIDを取得
-
-  const maps = [
-    { id: 'map1', name: 'Crossroads', size: 'Small', strategicPoints: 2 },
-    { id: 'map2', name: 'Forest Siege', size: 'Medium', strategicPoints: 3 },
-    { id: 'map3', name: 'Urban Warfare', size: 'Large', strategicPoints: 5 },
-  ];
 
   const backLink = mode === 'ai' ? '/ai-setup' : '/online-lobby';
   const nextLinkBase = '/unit-deployment';
@@ -37,7 +32,7 @@ function MapSelectionContent() {
         </h1>
 
         <div className="space-y-4 mb-8">
-          {maps.map(map => (
+          {MAP_OPTIONS.map(map => (
             <div
               key={map.id}
               className={`p-4 bg-gray-700 rounded-md hover:bg-gray-600 transition-colors cursor-pointer
@@ -45,7 +40,7 @@ function MapSelectionContent() {
               onClick={() => handleMapSelect(map.id)} // div全体をクリック可能に
             >
               <h2 className="text-xl font-semibold text-white">{map.name}</h2>
-              <p className="text-sm text-gray-300">Size: {map.size}, Strategic Points: {map.strategicPoints}</p>
+              <p className="text-sm text-gray-300">Size: {ALL_MAPS_DATA[map.id]?.cols}x{ALL_MAPS_DATA[map.id]?.rows}</p> {/* 詳細情報を表示 */}
               {/* ボタンは視覚的な補助として残しても良いし、divのクリックに任せても良い */}
               <div className="mt-2">
                  <Button
