@@ -1,27 +1,29 @@
 // src/app/game-mode-selection/page.tsx
-import Link from 'next/link';
+import Button from '@/components/ui/Button';
 
 export default function GameModeSelectionScreen() {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center p-24">
-      <h1>Game Mode Selection</h1>
-      <nav className="flex flex-col space-y-4 mt-8">
-        <Link href="/online-lobby" className="px-6 py-3 bg-blue-500 hover:bg-blue-600 rounded">
+    <div className="flex min-h-screen flex-col items-center justify-center p-12 bg-gray-800">
+      <div className="w-full max-w-lg p-8 bg-gray-900 rounded-xl shadow-2xl space-y-5">
+        <h1 className="text-4xl font-bold text-center text-white mb-8">Select Game Mode</h1>
+        <Button href="/online-lobby" variant="primary" size="lg" className="w-full">
           1v1 Online Battle
-        </Link>
-        <Link href="/ai-setup" className="px-6 py-3 bg-teal-500 hover:bg-teal-600 rounded">
+        </Button>
+        <Button href="/ai-setup" variant="primary" size="lg" className="w-full">
           1v1 AI Battle
-        </Link>
-        <Link href="/tutorial-selection" className="px-6 py-3 bg-purple-500 hover:bg-purple-600 rounded">
+        </Button>
+        <Button href="/tutorial-selection" variant="secondary" size="lg" className="w-full">
           Tutorial
-        </Link>
-        <Link href="/replay-list" className="px-6 py-3 bg-indigo-500 hover:bg-indigo-600 rounded">
+        </Button>
+        <Button href="/replay-list" variant="secondary" size="lg" className="w-full">
           Replay
-        </Link>
-        <Link href="/main-menu" className="mt-8 text-sm text-gray-400 hover:text-gray-200">
-          Back to Main Menu
-        </Link>
-      </nav>
+        </Button>
+        <div className="pt-5 text-center">
+          <Button href="/main-menu" variant="ghost" size="sm">
+            Back to Main Menu
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

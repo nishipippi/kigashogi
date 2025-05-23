@@ -16,8 +16,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ja"> {/* lang属性を 'ja' に変更 */}
-      <body className={inter.className}>{children}</body> {/* classNameにフォントを適用 */}
+    <html lang="ja">
+      <body className={`${inter.className} bg-gray-900 text-gray-100`}> {/* bodyに基本の背景色と文字色 */}
+        <div className="container mx-auto px-4 py-8 min-h-screen flex flex-col"> {/* コンテナでラップ */}
+          {children}
+        </div>
+      </body>
     </html>
   );
 }

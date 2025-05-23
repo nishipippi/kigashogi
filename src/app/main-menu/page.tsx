@@ -1,23 +1,26 @@
 // src/app/main-menu/page.tsx
-import Link from 'next/link';
+import Button from '@/components/ui/Button';
 
 export default function MainMenu() {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center p-24">
-      <h1>Main Menu</h1>
-      <nav className="flex flex-col space-y-4 mt-8">
-        <Link href="/game-mode-selection" className="px-6 py-3 bg-green-600 hover:bg-green-700 rounded">
+    <div className="flex min-h-screen flex-col items-center justify-center p-12 bg-gray-800">
+      <div className="w-full max-w-md p-8 bg-gray-900 rounded-xl shadow-2xl space-y-6">
+        <h1 className="text-5xl font-bold text-center text-white mb-10">Main Menu</h1>
+        <Button href="/game-mode-selection" variant="primary" size="lg" className="w-full">
           Game Start
-        </Link>
-        <Link href="/options" className="px-6 py-3 bg-yellow-600 hover:bg-yellow-700 rounded">
+        </Button>
+        <Button href="/options" variant="secondary" size="lg" className="w-full">
           Options
-        </Link>
-        {/* 終了はダイアログ経由などになるため、ここでは一旦コメントアウト */}
-        {/* <button className="px-6 py-3 bg-red-600 hover:bg-red-700 rounded">Exit</button> */}
-        <Link href="/" className="mt-8 text-sm text-gray-400 hover:text-gray-200">
-          Back to Title
-        </Link>
-      </nav>
+        </Button>
+        <Button variant="danger" size="lg" className="w-full" onClick={() => alert('Exit game functionality to be implemented!')}>
+          Exit Game
+        </Button>
+        <div className="pt-6 text-center">
+          <Button href="/" variant="ghost" size="sm">
+            Back to Title
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
