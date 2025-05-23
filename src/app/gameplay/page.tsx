@@ -14,7 +14,7 @@ import { ALL_UNITS, UNITS_MAP } from '@/gameData/units';
 import { hexDistance, logicalToAxial, axialToLogical, findPathAStar } from '@/lib/hexUtils';
 import { hasLineOfSight, calculateDamage } from '@/lib/battleUtils';
 import { canObserveTarget } from '@/lib/visibilityUtils';
-import { decideCommanderAIAction, decideCombatAIAction, type AIAction } from '@/lib/aiUtils';
+import { decideCommanderAIAction, decideCombatAIAction, type AIAction, resetGlobalAIBuildOrderIndex } from '@/lib/aiUtils'; // resetGlobalAIBuildOrderIndex をインポート
 
 const BASE_CAPTURE_DURATION_MS = 10000;
 const TICK_RATE_MS = 100;
@@ -31,35 +31,37 @@ function GameplayContent() {
 
   const storeInitialCost = useGameSettingsStore(state => state.initialCost);
   const selectedMapIdFromStore = useGameSettingsStore(state => state.selectedMapId);
-  const allUnitsOnMapFromStore = useGameSettingsStore(state => state.allUnitsOnMap);
-  const updateUnitOnMap = useGameSettingsStore(state => state.updateUnitOnMap);
-  const setAllUnitsOnMapDirectly = useGameSettingsStore(state => state.setAllUnitsOnMap);
+  const allUnitsOnMapFromStore = useGameSettingsStore(state => state.allUnitsOnMap); // allUnitsOnMap は配列なので注意
   const gameOverMessage = useGameSettingsStore(state => state.gameOverMessage);
-  const setGameOver = useGameSettingsStore(state => state.setGameOver);
-
   const playerResources = useGameSettingsStore(state => state.playerResources);
   const enemyResourcesStore = useGameSettingsStore(state => state.enemyResources);
-  const startUnitProductionAction = useGameSettingsStore(state => state.startUnitProduction);
-  const clearCommanderProductionQueueAction = useGameSettingsStore(state => state.clearCommanderProductionQueue);
-  const addUnitToMapAction = useGameSettingsStore(state => state.addUnitToMap);
-  const addPlayerResourcesAction = useGameSettingsStore(state => state.addPlayerResources);
-  const addEnemyResourcesAction = useGameSettingsStore(state => state.addEnemyResources);
-
-  const setMapDataInStore = useGameSettingsStore(state => state.setCurrentMapData);
-  const updateStrategicPointState = useGameSettingsStore(state => state.updateStrategicPointState);
-  const playerVP = useGameSettingsStore(state => state.victoryPoints.player);
-  const enemyVP = useGameSettingsStore(state => state.victoryPoints.enemy);
+  const victoryPoints = useGameSettingsStore(state => state.victoryPoints); // オブジェクトなので注意
   const gameTimeFromStore = useGameSettingsStore(state => state.gameTimeElapsed);
   const gameTimeLimit = useGameSettingsStore(state => state.gameTimeLimit);
   const targetVictoryPoints = useGameSettingsStore(state => state.targetVictoryPoints);
-  const addVictoryPointsToPlayer = useGameSettingsStore(state => state.addVictoryPointsToPlayer);
-  const incrementGameTime = useGameSettingsStore(state => state.incrementGameTime);
-  const resetGameSessionState = useGameSettingsStore(state => state.resetGameSessionState);
-  const currentMapDataFromStore = useGameSettingsStore(state => state.currentMapDataState);
+  const currentMapDataFromStore = useGameSettingsStore(state => state.currentMapDataState); // オブジェクトなので注意
+
+  const {
+    updateUnitOnMap,
+    setAllUnitsOnMap: setAllUnitsOnMapDirectly, // setAllUnitsOnMap の名前を setAllUnitsOnMapDirectly に変更
+    setGameOver,
+    startUnitProduction: startUnitProductionAction, // startUnitProduction の名前を startUnitProductionAction に変更
+    clearCommanderProductionQueue: clearCommanderProductionQueueAction, // clearCommanderProductionQueue の名前を clearCommanderProductionQueueAction に変更
+    addUnitToMap: addUnitToMapAction, // addUnitToMap の名前を addUnitToMapAction に変更
+    addPlayerResources: addPlayerResourcesAction, // addPlayerResources の名前を addPlayerResourcesAction に変更
+    addEnemyResources: addEnemyResourcesAction, // addEnemyResources の名前を addEnemyResourcesAction に変更
+    setCurrentMapData: setMapDataInStore, // setCurrentMapData の名前を setMapDataInStore に変更
+    updateStrategicPointState,
+    addVictoryPointsToPlayer,
+    incrementGameTime,
+    resetGameSessionState,
+  } = useGameSettingsStore();
+
 
   const [selectedUnitInstanceId, setSelectedUnitInstanceId] = useState<string | null>(null);
   const [detailedSelectedUnitInfo, setDetailedSelectedUnitInfo] = useState<PlacedUnit | null>(null);
-  const [attackTargetInstanceId, setAttackTargetInstanceId] = useState<string | null>(null); // UI表示用
+  // attackTargetInstanceId はストアのユニット情報に含まれるため、ローカルステートは不要かも
+  // const [attackTargetInstanceId, setAttackTargetInstanceId] = useState<string | null>(null);
   const [attackingVisuals, setAttackingVisuals] = useState<{ attackerId: string, targetId: string, weaponType: 'HE' | 'AP' }[]>([]);
   const [visibleEnemyUnits, setVisibleEnemyUnits] = useState<PlacedUnit[]>([]);
   const [lastSeenEnemyUnits, setLastSeenEnemyUnits] = useState<Map<string, LastSeenUnitInfo>>(new Map());
@@ -71,16 +73,18 @@ function GameplayContent() {
 
   useEffect(() => {
     resetGameSessionState();
+    resetGlobalAIBuildOrderIndex(); // AIのビルドオーダーインデックスもリセット
     const mapIdToLoad = mapIdParam || selectedMapIdFromStore;
     if (mapIdToLoad && ALL_MAPS_DATA[mapIdToLoad]) {
-      const mapData = ALL_MAPS_DATA[mapIdToLoad];
+      const mapData = JSON.parse(JSON.stringify(ALL_MAPS_DATA[mapIdToLoad])); // 深いコピーで元データを汚染しない
       setMapDataInStore(mapData);
     } else {
       console.warn(`Map with id "${mapIdToLoad}" not found.`);
       setMapDataInStore(null);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapIdParam, selectedMapIdFromStore, setMapDataInStore, resetGameSessionState]);
+  }, [mapIdParam, selectedMapIdFromStore /*setMapDataInStore, resetGameSessionState を削除。無限ループの可能性回避*/]);
+  // setMapDataInStore と resetGameSessionState を依存配列から削除。これらは通常マップ変更時に一度だけ呼び出されるべき。
 
   useEffect(() => {
     if (gameOverMessage) return;
@@ -207,7 +211,7 @@ function GameplayContent() {
 
     if (logicalPath.length > 0) {
         const firstStepAxial = axialPath[0];
-        const firstStepLogical = logicalPath[0]; // axialToLogical(firstStepAxial.q, firstStepAxial.r) と同じはず
+        const firstStepLogical = logicalPath[0];
         const firstStepDx = firstStepLogical.x - unitToMove.position.x;
         const firstStepDy = firstStepLogical.y - unitToMove.position.y;
         if (Math.abs(firstStepDx) > 0.01 || Math.abs(firstStepDy) > 0.01) {
@@ -236,14 +240,15 @@ function GameplayContent() {
         isTurning: needsToTurn,
         isMoving: canStartMoving,
         status: needsToTurn ? 'turning' : (canStartMoving ? 'moving' : 'idle'),
-        attackTargetInstanceId: null,
+        attackTargetInstanceId: null, // 移動開始時に攻撃目標をクリア
     });
   }, [updateUnitOnMap, getTimeToTraverseHex]);
 
 
   useEffect(() => {
     const unitProcessInterval = setInterval(() => {
-        const { gameOverMessage: currentGameOverMsg, allUnitsOnMap: currentUnitsFromStore, currentMapDataState: currentMapDataForLoop } = useGameSettingsStore.getState();
+        const { gameOverMessage: currentGameOverMsg, allUnitsOnMap: currentUnitsFromStore, currentMapDataState: currentMapDataForLoop, enemyResources: currentEnemyResources } = useGameSettingsStore.getState();
+        // enemyResources を直接参照するように変更
         if (currentGameOverMsg) { clearInterval(unitProcessInterval); return; }
 
         const currentTime = Date.now();
@@ -520,10 +525,13 @@ function GameplayContent() {
                 }
             }
 
-            if (unit.owner === 'enemy' && !currentGameOverMsg) { // AIの行動決定はゲームオーバー前のみ
+            // AIユニットの行動決定と実行
+            if (unit.owner === 'enemy' && !currentGameOverMsg) {
                 let aiDecision: AIAction | null = null;
+                const currentGameTimeForAI = useGameSettingsStore.getState().gameTimeElapsed; // AI行動決定用に最新の時間を取得
+
                 if (unitDef.isCommander) {
-                    aiDecision = decideCommanderAIAction(unit, unitDef, currentUnitsFromStore, enemyResourcesStore, currentMapDataForLoop);
+                    aiDecision = decideCommanderAIAction(unit, unitDef, currentUnitsFromStore, currentEnemyResources, currentMapDataForLoop, currentGameTimeForAI);
                 } else {
                     aiDecision = decideCombatAIAction(unit, unitDef, currentUnitsFromStore, currentMapDataForLoop);
                 }
@@ -534,7 +542,7 @@ function GameplayContent() {
                             if (aiDecision.targetUnitId) {
                                 const prodResult = startUnitProductionAction(unit.instanceId, aiDecision.targetUnitId, 'enemy');
                                 if (!prodResult.success && prodResult.message !== "Commander is already producing." && prodResult.message !== "Not enough resources.") {
-                                    console.warn(`AI Prod Fail for ${unit.name} (${unit.instanceId}): ${prodResult.message} trying to build ${aiDecision.targetUnitId}`);
+                                    // console.warn(`AI Prod Fail for ${unit.name} (${unit.instanceId.slice(-4)}): ${prodResult.message} trying to build ${aiDecision.targetUnitId}`);
                                 }
                             }
                             break;
@@ -628,7 +636,7 @@ function GameplayContent() {
     }, gameTickRate);
     return () => clearInterval(unitProcessInterval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [/*gameOverMessage, (gameplay/page.tsxから削除されていたため、影響のありそうなものをコメントアウト)*/ updateUnitOnMap, setAllUnitsOnMapDirectly, setGameOver, updateStrategicPointState, visibleEnemyUnits, lastSeenEnemyUnits, addUnitToMapAction, clearCommanderProductionQueueAction, startUnitProductionAction, addPlayerResourcesAction, addEnemyResourcesAction, enemyResourcesStore, incrementGameTime, playerVP, enemyVP, gameTimeLimit, targetVictoryPoints, initiateMove, getTimeToTraverseHex]);
+  }, [/* 依存配列を最新化 */ updateUnitOnMap, setAllUnitsOnMapDirectly, setGameOver, updateStrategicPointState, visibleEnemyUnits, lastSeenEnemyUnits, addUnitToMapAction, clearCommanderProductionQueueAction, startUnitProductionAction, addPlayerResourcesAction, addEnemyResourcesAction, /*enemyResourcesStore,*/ incrementGameTime, /*playerVP, enemyVP, gameTimeLimit, targetVictoryPoints,*/ initiateMove, getTimeToTraverseHex, gameOverMessage, playerResources, /*currentMapDataFromStore*/]);
 
 
   const handleAttackCommand = useCallback((targetUnit: PlacedUnit) => {
@@ -643,7 +651,7 @@ function GameplayContent() {
         const distance = hexDistance(attackerPosAxial.q, attackerPosAxial.r, targetPosAxial.q, targetPosAxial.r);
 
         let weaponToUseRange: number | undefined;
-        const targetDef = UNITS_MAP.get(targetUnit.unitId); // ターゲットの定義を取得
+        const targetDef = UNITS_MAP.get(targetUnit.unitId);
         const targetHasArmor = targetDef ? (targetDef.stats.armor.front > 0 || targetDef.stats.armor.side > 0 || targetDef.stats.armor.back > 0 || targetDef.stats.armor.top > 0) : false;
 
 
@@ -651,7 +659,7 @@ function GameplayContent() {
              weaponToUseRange = attackerDef.stats.apWeapon.range;
         } else if (attackerDef.stats.heWeapon && distance <= attackerDef.stats.heWeapon.range) {
              weaponToUseRange = attackerDef.stats.heWeapon.range;
-        } else if (attackerDef.stats.apWeapon && distance <= attackerDef.stats.apWeapon.range) { // APしかなくても or HEが射程外なら
+        } else if (attackerDef.stats.apWeapon && distance <= attackerDef.stats.apWeapon.range) {
              weaponToUseRange = attackerDef.stats.apWeapon.range;
         }
 
@@ -674,7 +682,7 @@ function GameplayContent() {
             updateUnitOnMap(attacker.instanceId, { attackTargetInstanceId: targetUnit.instanceId, status: 'idle' });
             initiateMove(attacker, targetUnit.position.x, targetUnit.position.y);
         }
-        setAttackTargetInstanceId(targetUnit.instanceId);
+        // setAttackTargetInstanceId(targetUnit.instanceId); // ストアで管理するため不要
     }
   }, [selectedUnitInstanceId, updateUnitOnMap, initiateMove]);
 
@@ -687,7 +695,8 @@ function GameplayContent() {
       if (selectedUnit && selectedUnit.owner === 'player') {
         initiateMove(selectedUnit, logicalX, logicalY);
       }
-      setAttackTargetInstanceId(null);
+      // setAttackTargetInstanceId(null); // ストアで管理するため不要
+      if(selectedUnit) updateUnitOnMap(selectedUnit.instanceId, { attackTargetInstanceId: null });
       return;
     }
 
@@ -697,12 +706,12 @@ function GameplayContent() {
       }
     } else if (unitOnHex) {
       setSelectedUnitInstanceId(unitOnHex.instanceId);
-      setAttackTargetInstanceId(null);
+      // setAttackTargetInstanceId(null); // ストアで管理するため不要
     } else {
       setSelectedUnitInstanceId(null);
-      setAttackTargetInstanceId(null);
+      // setAttackTargetInstanceId(null); // ストアで管理するため不要
     }
-  }, [selectedUnitInstanceId, initiateMove, handleAttackCommand]);
+  }, [selectedUnitInstanceId, initiateMove, handleAttackCommand, updateUnitOnMap]);
 
   const handlePause = () => { alert("Game Paused (Pause Menu to be implemented)"); };
   const handleSurrender = () => {
@@ -718,7 +727,7 @@ function GameplayContent() {
   }, [selectedUnitInstanceId, allUnitsOnMapFromStore]);
 
   useEffect(() => {
-    const currentGameOverMsg = useGameSettingsStore.getState().gameOverMessage; // useEffect内でのみ取得
+    const currentGameOverMsg = useGameSettingsStore.getState().gameOverMessage;
     if (currentGameOverMsg) {
         console.log("Game Over:", currentGameOverMsg);
         setTimeout(() => {
@@ -728,7 +737,7 @@ function GameplayContent() {
             router.push(`/results?status=${status}&mapId=${mapIdParam || selectedMapIdFromStore || 'unknown'}&reason=${encodeURIComponent(currentGameOverMsg)}`);
         }, 3000);
     }
-  }, [gameOverMessage, router, mapIdParam, selectedMapIdFromStore]); // gameOverMessage を依存配列に追加
+  }, [gameOverMessage, router, mapIdParam, selectedMapIdFromStore]);
 
   const unitsToDisplayOnGrid = [
       ...allUnitsOnMapFromStore.filter(u => u.owner === 'player' && u.status !== 'destroyed'),
@@ -767,8 +776,8 @@ function GameplayContent() {
           <div>P-Res: <span className="font-bold text-yellow-400">{playerResources}</span></div>
           <div>E-Res: <span className="font-bold text-orange-400">{enemyResourcesStore}</span></div>
           <div>VP:
-            <span className="text-blue-400 font-semibold"> {playerVP}</span> /
-            <span className="text-red-400 font-semibold"> {enemyVP}</span> {}
+            <span className="text-blue-400 font-semibold"> {victoryPoints.player}</span> /
+            <span className="text-red-400 font-semibold"> {victoryPoints.enemy}</span> {}
             (<span className="text-gray-400">T: {targetVictoryPoints}</span>)
           </div>
         </div>
@@ -874,7 +883,7 @@ function GameplayContent() {
             selectedUnitInstanceId={selectedUnitInstanceId}
             attackingPairs={attackingVisuals}
             visibleEnemyInstanceIds={new Set(visibleEnemyUnits.map(u => u.instanceId))}
-            strategicPoints={currentMapDataFromStore?.strategicPoints || []} // ★★★ この行のコメントアウトを解除 ★★★
+            strategicPoints={currentMapDataFromStore?.strategicPoints || []}
           />
           <div className="absolute bottom-4 right-4 w-56 h-44 bg-green-900 bg-opacity-70 border-2 border-gray-600 rounded shadow-xl p-1 text-xs">
             <p className="text-center text-green-300">Mini-map Placeholder</p>
