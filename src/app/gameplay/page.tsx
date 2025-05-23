@@ -3,16 +3,13 @@
 
 import Button from '@/components/ui/Button';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Suspense, useState, useEffect } from 'react';
-import { useGameSettingsStore, type PlacedUnit } from '@/stores/gameSettingsStore'; // PlacedUnit をインポート
+import { Suspense, useState, useEffect, useCallback } from 'react'; // useCallback を追加
+import { useGameSettingsStore, type PlacedUnit } from '@/stores/gameSettingsStore';
 import type { UnitData } from '@/types/unit';
-import GameplayHexGrid from '@/components/game/GameplayHexGrid'; // 新しいグリッドコンポーネント
+import GameplayHexGrid from '@/components/game/GameplayHexGrid';
 import { ALL_MAPS_DATA } from '@/gameData/maps'; // ALL_MAPS_DATA はここから
 import type { MapData } from '@/types/map';      // MapData 型はここから
 import { UNITS_MAP } from '@/gameData/units';
-
-// 選択ユニット表示のテスト用 MOCK_SELECTED_UNIT_DETAILS は直接使用しなくなりました。
-// 代わりに detailedSelectedUnitInfo state を使用します。
 
 function GameplayContent() {
   const router = useRouter();
@@ -20,34 +17,33 @@ function GameplayContent() {
   const mapIdParam = searchParams.get('mapId');
 
   const storeInitialCost = useGameSettingsStore(state => state.initialCost);
-  const initialDeploymentFromStore = useGameSettingsStore(state => state.initialDeployment);
+  // allUnitsOnMap はストアから直接取得し、コンポーネントのローカルstateとしては管理しない
+  const allUnitsOnMap = useGameSettingsStore(state => state.allUnitsOnMap);
+  const updateUnitOnMap = useGameSettingsStore(state => state.updateUnitOnMap);
+  // setAllUnitsOnMap は初期化時にストア側で行うため、ここでは直接呼ばない
+  // const setAllUnitsOnMap = useGameSettingsStore(state => state.setAllUnitsOnMap);
   const selectedMapIdFromStore = useGameSettingsStore(state => state.selectedMapId);
+  // const initialDeploymentFromStore = useGameSettingsStore(state => state.initialDeployment);
+
 
   const [currentMapData, setCurrentMapData] = useState<MapData | null>(null);
-  const [gameTime, setGameTime] = useState(0); // ゲーム内時間 (秒)
-  const [resources, setResources] = useState(storeInitialCost); // 初期リソースはストアから
+  const [gameTime, setGameTime] = useState(0);
+  const [resources, setResources] = useState(storeInitialCost);
   const [victoryPoints, setVictoryPoints] = useState({ player: 0, enemy: 0 });
 
-  // ゲーム内の全ユニットの状態を管理 (初期配置 + ゲーム中に生産/破壊されるユニット)
-  const [allPlacedUnits, setAllPlacedUnits] = useState<PlacedUnit[]>([]);
-  // 選択中のユニットのインスタンスID (ユニークID) - 将来的に PlacedUnit に instanceId を持たせる想定
   const [selectedUnitInstanceId, setSelectedUnitInstanceId] = useState<string | null>(null);
-  // 選択中のユニットの詳細情報 (UI表示用)
   const [detailedSelectedUnitInfo, setDetailedSelectedUnitInfo] = useState<PlacedUnit | null>(null);
+  const [targetMovePosition, setTargetMovePosition] = useState<{ x: number; y: number } | null>(null);
 
-  const COST_REVENUE_INTERVAL = 10000; // 10秒 (10000 ms)
-  const COST_REVENUE_AMOUNT = 50;    // 50コスト
+  const COST_REVENUE_INTERVAL = 10000;
+  const COST_REVENUE_AMOUNT = 50;
 
   useEffect(() => {
-    // マップデータのロード
-    const mapIdToLoad = mapIdParam || selectedMapIdFromStore; // URLパラメータ優先
+    const mapIdToLoad = mapIdParam || selectedMapIdFromStore;
     if (mapIdToLoad && ALL_MAPS_DATA[mapIdToLoad]) {
       setCurrentMapData(ALL_MAPS_DATA[mapIdToLoad]);
     } else {
       console.warn(`Map with id "${mapIdToLoad}" not found.`);
-      // フォールバックとして最初のマップなどを設定することも検討
-      // const firstMapKey = Object.keys(ALL_MAPS_DATA)[0];
-      // if (firstMapKey) setCurrentMapData(ALL_MAPS_DATA[firstMapKey]);
     }
   }, [mapIdParam, selectedMapIdFromStore]);
 
@@ -55,66 +51,148 @@ function GameplayContent() {
     setResources(storeInitialCost);
   }, [storeInitialCost]);
 
+  // ゲーム開始時にストアの initialDeployment を allUnitsOnMap にコピーするロジックは
+  // ストアの setInitialDeployment 内で既に行われているため、ここでは不要。
+  // useEffect(() => {
+  //   if (initialDeploymentFromStore && initialDeploymentFromStore.length > 0 && allUnitsOnMap.length === 0) {
+  //     // このロジックはストアの初期化方法による。
+  //     // ストアが永続化されておらず、ページリロードで initialDeployment が残っていても allUnitsOnMap が空になる場合など。
+  //     // 通常は setInitialDeployment 呼び出し時に allUnitsOnMap もセットされる。
+  //     // useGameSettingsStore.getState().setAllUnitsOnMap(initialDeploymentFromStore); // 直接呼ぶのは非推奨
+  //   }
+  // }, [initialDeploymentFromStore, allUnitsOnMap]);
+
+
   useEffect(() => {
-    // ストアから取得した初期配置をゲーム内ユニットリストにセット
-    // initialDeploymentFromStore が変更されたとき（通常はページロード後1回）に実行
-    if (initialDeploymentFromStore && initialDeploymentFromStore.length > 0) {
-      setAllPlacedUnits(initialDeploymentFromStore);
+    const timer = setInterval(() => setGameTime(prev => prev + 1), 1000);
+    const revenueTimer = setInterval(() => setResources(prev => prev + COST_REVENUE_AMOUNT), COST_REVENUE_INTERVAL);
+    const vpTimer = setInterval(() => setVictoryPoints(prev => ({ player: prev.player + 1, enemy: prev.enemy + 0 })), 30000);
+    return () => { clearInterval(timer); clearInterval(revenueTimer); clearInterval(vpTimer); };
+  }, []);
+
+  // ユニット移動ロジック
+  useEffect(() => {
+    if (!selectedUnitInstanceId || !targetMovePosition || !allUnitsOnMap || allUnitsOnMap.length === 0) return;
+
+    let animationFrameId: number;
+    const unitToMove = allUnitsOnMap.find(u => u.instanceId === selectedUnitInstanceId);
+
+    if (!unitToMove) {
+      setTargetMovePosition(null);
+      return;
     }
-  }, [initialDeploymentFromStore]);
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setGameTime(prevTime => prevTime + 1);
-    }, 1000);
+    const move = () => {
+      // ストアから最新のユニット情報を取得し直す（他の要因で変更されている可能性に対応）
+      const currentUnitState = useGameSettingsStore.getState().allUnitsOnMap.find(u => u.instanceId === selectedUnitInstanceId);
+      if (!currentUnitState || !targetMovePosition) { // targetMovePositionがnullになったら停止
+        setTargetMovePosition(null);
+        return;
+      }
 
-    const revenueTimer = setInterval(() => {
-      setResources(prevResources => prevResources + COST_REVENUE_AMOUNT);
-    }, COST_REVENUE_INTERVAL);
+      const currentPos = currentUnitState.position;
+      const targetPos = targetMovePosition;
+      let newX = currentPos.x;
+      let newY = currentPos.y;
+      let newOrientation = currentUnitState.orientation;
+      const speedFactor = 0.05; // 移動速度係数 (小さいほど遅い)
 
-    const vpTimer = setInterval(() => {
-        setVictoryPoints(prevVP => ({
-            player: prevVP.player + 1, // 仮で1点ずつ
-            enemy: prevVP.enemy + 0
-        }));
-    }, 30000);
+      const dx = targetPos.x - currentPos.x;
+      const dy = targetPos.y - currentPos.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
 
-    // // 仮: ユニット選択のシミュレーション (MOCK_SELECTED_UNIT_DETAILS を使っていた部分の代替)
-    // if (allPlacedUnits.length > 0 && !detailedSelectedUnitInfo) {
-    //     const firstUnit = allPlacedUnits[0];
-    //     // setSelectedUnitInstanceId(firstUnit.instanceId); // TODO: instanceId を使う
-    //     setSelectedUnitInstanceId(firstUnit.unitId); // 仮
-    //     setDetailedSelectedUnitInfo(firstUnit);
-    // }
+      if (distance < 0.1) { // 到着判定
+        newX = targetPos.x;
+        newY = targetPos.y;
+        setTargetMovePosition(null); // 移動完了
+        updateUnitOnMap(selectedUnitInstanceId, { position: { x: newX, y: newY }, orientation: newOrientation });
+        console.log(`Unit ${selectedUnitInstanceId} arrived at (${newX.toFixed(1)}, ${newY.toFixed(1)})`);
+        return;
+      }
 
+      // 移動方向への単位ベクトル
+      const moveX = dx / distance;
+      const moveY = dy / distance;
+
+      newX += moveX * speedFactor;
+      newY += moveY * speedFactor;
+
+      // 向きの計算 (0-5のヘックス方向)
+      if (distance > 0.01) {
+          const angleRad = Math.atan2(dy, dx);
+          let angleDeg = angleRad * (180 / Math.PI) + 90; // +90度でY軸上向きを0度基準に調整
+          if (angleDeg < 0) angleDeg += 360;
+          if (angleDeg >= 360) angleDeg -= 360;
+          // 60度ごとのセクターに丸める (0が上、1が右上...)
+          newOrientation = Math.floor(angleDeg / 60 + 0.5) % 6;
+      }
+
+      updateUnitOnMap(selectedUnitInstanceId, {
+        position: { x: parseFloat(newX.toFixed(2)), y: parseFloat(newY.toFixed(2)) },
+        orientation: newOrientation
+      });
+
+      animationFrameId = requestAnimationFrame(move); // 次のフレームで再帰的にmoveを呼び出す
+    };
+
+    animationFrameId = requestAnimationFrame(move); // 移動開始
 
     return () => {
-      clearInterval(timer);
-      clearInterval(revenueTimer);
-      clearInterval(vpTimer);
+      cancelAnimationFrame(animationFrameId); // クリーンアップ
+      // もし移動中に選択ユニットが変わったり、目標が変わったら、
+      // ここで updateUnitOnMap を呼ばないようにするか、
+      // setTargetMovePosition(null) を呼んで移動を止める。
     };
-  }, []); // 依存配列が空なので、マウント時に一度だけ実行される
+  }, [selectedUnitInstanceId, targetMovePosition, allUnitsOnMap, updateUnitOnMap]);
 
-  const handleHexClickInGame = (q: number, r: number, logicalX: number, logicalY: number, unitOnHex?: PlacedUnit) => {
-    console.log(`Clicked hex: (${logicalX}, ${logicalY}), Unit:`, unitOnHex);
+
+  const handleMapRightClick = useCallback((logicalX: number, logicalY: number) => {
+    if (selectedUnitInstanceId) {
+      console.log(`Move command for unit ${selectedUnitInstanceId} to (${logicalX}, ${logicalY})`);
+      setTargetMovePosition({ x: logicalX, y: logicalY });
+    }
+  }, [selectedUnitInstanceId]);
+
+  const handleHexClickInGame = useCallback((q: number, r: number, logicalX: number, logicalY: number, unitOnHex?: PlacedUnit, event?: React.MouseEvent<SVGGElement>) => {
+    if (event) {
+        event.preventDefault(); // イベントのデフォルト動作を抑制
+        if (event.button === 2 || event.type === 'contextmenu') { // 右クリックまたはコンテキストメニューイベント
+            handleMapRightClick(logicalX, logicalY);
+            return;
+        }
+    }
+
+    // 左クリックの処理
     if (unitOnHex) {
-      // setSelectedUnitInstanceId(unitOnHex.instanceId); // TODO: PlacedUnitにinstanceIdを追加し、それを使用する
-      setSelectedUnitInstanceId(unitOnHex.unitId + `_${unitOnHex.position.x}_${unitOnHex.position.y}`); // 仮のユニークIDとして使用
+      setSelectedUnitInstanceId(unitOnHex.instanceId);
       setDetailedSelectedUnitInfo(unitOnHex);
     } else {
-      // ユニットがいない場所をクリックしたら選択解除
       setSelectedUnitInstanceId(null);
       setDetailedSelectedUnitInfo(null);
     }
-  };
+  }, [handleMapRightClick]);
+
+
+  useEffect(() => {
+    // allUnitsOnMapが更新されたら、選択中ユニットの詳細情報も更新する
+    if (selectedUnitInstanceId) {
+        const updatedSelectedUnit = allUnitsOnMap.find(u => u.instanceId === selectedUnitInstanceId);
+        if (updatedSelectedUnit) {
+            setDetailedSelectedUnitInfo(updatedSelectedUnit);
+        } else {
+            // 選択されていたユニットがマップから消えた場合など
+            setSelectedUnitInstanceId(null);
+            setDetailedSelectedUnitInfo(null);
+        }
+    }
+  }, [allUnitsOnMap, selectedUnitInstanceId]);
+
 
   const handlePause = () => {
-    // TODO: ポーズメニュー表示ロジック
     alert("Game Paused (Pause Menu to be implemented)");
   };
 
   const handleSurrender = () => {
-    // TODO: 降参処理とリザルト画面へ遷移
     alert("Surrendered (Results screen to be implemented)");
     router.push(`/results?status=surrender&mapId=${mapIdParam}`);
   };
@@ -132,7 +210,7 @@ function GameplayContent() {
           <div>Victory Points:
             <span className="text-blue-400 font-semibold"> {victoryPoints.player}</span> /
             <span className="text-red-400 font-semibold"> {victoryPoints.enemy}</span>
-            (Target: 100) {/* Targetはマップサイズ等で変動 */}
+            (Target: 100)
           </div>
         </div>
         <div className="flex items-center space-x-3">
@@ -142,25 +220,29 @@ function GameplayContent() {
       </header>
 
       <main className="flex-grow flex relative">
-        <aside className="w-64 bg-gray-800 bg-opacity-80 p-3 space-y-3 overflow-y-auto shadow-md">
-          <h2 className="text-lg font-semibold border-b border-gray-700 pb-2">Unit Information</h2>
+        <aside className="w-72 bg-gray-800 bg-opacity-80 p-4 space-y-3 overflow-y-auto shadow-md"> {/* 幅を少し広げた */}
+          <h2 className="text-lg font-semibold border-b border-gray-700 pb-2 mb-3">Unit Information</h2>
           {detailedSelectedUnitInfo && UNITS_MAP.has(detailedSelectedUnitInfo.unitId) ? (
-            (() => { // 即時実行関数でスコープを作成
-              const unitDef = UNITS_MAP.get(detailedSelectedUnitInfo.unitId)!; // !で non-null をアサート (型ガード済みのため)
+            (() => {
+              const unitDef = UNITS_MAP.get(detailedSelectedUnitInfo.unitId)!;
               return (
-                <div className="text-sm space-y-1">
-                  <p><span className="font-medium">{unitDef.icon} {unitDef.name}</span></p>
-                  <p>Owner: <span className={detailedSelectedUnitInfo.owner === 'player' ? 'text-blue-300' : 'text-red-300'}>{detailedSelectedUnitInfo.owner}</span></p>
+                <div className="text-sm space-y-1.5"> {/* space-yを調整 */}
+                  <div className="flex items-center mb-1">
+                    <span className="text-2xl mr-2">{unitDef.icon}</span>
+                    <span className="font-semibold text-lg">{unitDef.name}</span>
+                  </div>
+                  <p>Instance ID: <span className="text-gray-400 text-xs">{detailedSelectedUnitInfo.instanceId}</span></p>
+                  <p>Owner: <span className={detailedSelectedUnitInfo.owner === 'player' ? 'text-blue-400' : 'text-red-400'}>{detailedSelectedUnitInfo.owner}</span></p>
                   <p>HP: {detailedSelectedUnitInfo.currentHp} / {unitDef.stats.hp}</p>
-                  {unitDef.stats.hp > 0 && detailedSelectedUnitInfo.currentHp !== undefined && ( // HPが0より大きい場合のみバー表示
-                    <div className="w-full bg-gray-600 rounded-full h-2.5 my-1">
+                  {unitDef.stats.hp > 0 && detailedSelectedUnitInfo.currentHp !== undefined && (
+                    <div className="w-full bg-gray-600 rounded h-3 my-1"> {/* 高さを調整 */}
                       <div
-                        className={`h-2.5 rounded-full ${
-                          detailedSelectedUnitInfo.currentHp / unitDef.stats.hp > 0.6 ? 'bg-green-500' :
-                          detailedSelectedUnitInfo.currentHp / unitDef.stats.hp > 0.3 ? 'bg-yellow-500' :
+                        className={`h-full rounded ${ /* 色を調整 */
+                          detailedSelectedUnitInfo.currentHp / unitDef.stats.hp > 0.66 ? 'bg-green-500' :
+                          detailedSelectedUnitInfo.currentHp / unitDef.stats.hp > 0.33 ? 'bg-yellow-500' :
                           'bg-red-500'
                         }`}
-                        style={{ width: `${Math.max(0, (detailedSelectedUnitInfo.currentHp / unitDef.stats.hp) * 100)}%` }} // マイナスにならないように
+                        style={{ width: `${Math.max(0, (detailedSelectedUnitInfo.currentHp / unitDef.stats.hp) * 100)}%` }}
                       ></div>
                     </div>
                   )}
@@ -168,9 +250,9 @@ function GameplayContent() {
                   {unitDef.stats.heWeapon && <p>HE: {unitDef.stats.heWeapon.power}P / {unitDef.stats.heWeapon.range}R / {unitDef.stats.heWeapon.dps}DPS</p>}
                   {unitDef.stats.apWeapon && <p>AP: {unitDef.stats.apWeapon.power}P / {unitDef.stats.apWeapon.range}R / {unitDef.stats.apWeapon.dps}DPS</p>}
                   <p>Move: {unitDef.stats.moveSpeed} hex/s</p>
+                  <p>Orientation: {detailedSelectedUnitInfo.orientation} (0-5)</p> {/* 向き表示 */}
                   <p>Sight: x{unitDef.stats.sightMultiplier} / {unitDef.stats.baseDetectionRange} hex</p>
                   {unitDef.stats.turnSpeed !== undefined && <p>Turn: {unitDef.stats.turnSpeed}°/s</p>}
-                  {/* 将来的にはユニットの現在の状態なども表示 */}
                 </div>
               );
             })()
@@ -178,7 +260,7 @@ function GameplayContent() {
             <p className="text-gray-400 text-sm">No unit selected.</p>
           )}
 
-          <h2 className="text-lg font-semibold border-b border-gray-700 pb-2 pt-4">Production Queue</h2>
+          <h2 className="text-lg font-semibold border-b border-gray-700 pb-2 pt-4 mb-3">Production Queue</h2>
           <div className="text-gray-400 text-sm">
             <p>(Commander Unit Production UI here)</p>
             <p>Queue: Empty</p>
@@ -189,17 +271,18 @@ function GameplayContent() {
           <GameplayHexGrid
             mapData={currentMapData}
             hexSize={26}
-            placedUnits={allPlacedUnits}
+            placedUnits={allUnitsOnMap}
             onHexClick={handleHexClickInGame}
             selectedUnitInstanceId={selectedUnitInstanceId}
           />
-          <div className="absolute bottom-4 right-4 w-48 h-36 bg-green-800 border-2 border-gray-600 rounded shadow-xl p-1">
-            <p className="text-xs text-center text-green-300">Mini-map</p>
+          <div className="absolute bottom-4 right-4 w-56 h-40 bg-gray-800 bg-opacity-80 border-2 border-gray-600 rounded shadow-xl p-2"> {/* サイズと色調整 */}
+            <p className="text-xs text-center text-gray-300 mb-1">Mini-map</p>
+            {/* ミニマップの内容はここに */}
           </div>
         </section>
       </main>
 
-      <footer className="h-10 bg-black bg-opacity-30 px-3 py-2 text-xs text-gray-400 border-t border-gray-700">
+      <footer className="h-10 bg-black bg-opacity-30 px-3 py-2 text-xs text-gray-400 border-t border-gray-700 flex items-center"> {/* flex items-center追加 */}
         Event: Unit Alpha destroyed! | Player Beta captured Strategic Point Charlie!
       </footer>
     </div>

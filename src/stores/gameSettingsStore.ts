@@ -1,19 +1,27 @@
 // src/stores/gameSettingsStore.ts
 import { create } from 'zustand';
-// 初期配置画面の DeployedUnit 型。これを InitialDeployedUnitConfig として扱う
-import type { DeployedUnit as InitialDeployedUnitConfig } from '@/app/unit-deployment/page';
-// UnitData 型をインポート (HPなどを参照するために必要になる可能性)
-// import type { UnitData } from '@/types/unit';
+import type { UnitData } from '@/types/unit'; // UnitDataも使う可能性があるのでインポート
 
-// ゲームプレイ中のユニットの状態を表す型 (HPや向きも含む)
-// この型定義は、ゲームプレイ画面や他のゲームロジックで共有されるため、
-// src/types/game.ts のような共通の型定義ファイルに移動することも検討できます。
-export interface PlacedUnit extends InitialDeployedUnitConfig {
-  // instanceId: string; // ゲーム内でユニークなID (推奨: UnitDeploymentContentで生成して付与)
+// 初期配置画面から渡されるデータの型 (ユニット種別IDと位置のみ)
+export interface InitialDeployedUnitConfig {
+  unitId: string; // ユニット種別ID
+  name: string; // ユニット名 (ユニット定義から取得できるが、初期配置時に持っておくと便利)
+  cost: number; // コスト (ユニット定義から取得できるが、初期配置時に持っておくと便利)
+  position: { x: number; y: number }; // 論理座標
+}
+
+// ゲームプレイ中のユニットインスタンスの型
+export interface PlacedUnit {
+  instanceId: string; // ゲーム内でユニークなインスタンスID
+  unitId: string; // ユニット種別ID (UnitDataのidに対応)
+  name: string; // 表示名 (UnitDataのname)
+  cost: number; // コスト (UnitDataのcost)
+  position: { x: number; y: number }; // 現在の論理座標
   currentHp: number;
   owner: 'player' | 'enemy'; // ユニットの所有者
-  orientation?: number; // ユニットの向き (例: 0-5 or 0-359 degrees)
+  orientation: number; // 0-5 (0:上, 1:右上, ...) または 0-359度
   // status?: 'idle' | 'moving' | 'attacking' | 'producing'; // 将来的な状態
+  // targetPosition?: { x: number; y: number } | null; // 移動目標地点 (ストアで管理する場合)
 }
 
 // AI難易度の型
@@ -23,19 +31,19 @@ export type Faction = 'alpha_force' | 'bravo_corp' | 'random';
 // 初期コストの型
 export type InitialCost = 300 | 500 | 700 | number;
 
+
 // ストアの状態の型定義
 interface GameSettingsState {
-  // AI対戦設定
+  // AI対戦設定などゲーム全体の設定
   aiDifficulty: AiDifficulty;
   playerFaction: Faction;
   enemyFaction: Faction;
   initialCost: InitialCost;
-
-  // マップ選択
   selectedMapId: string | null;
 
-  // 初期配置ユニットリスト (ゲームプレイ画面用)
-  initialDeployment: PlacedUnit[];
+  // ゲームプレイ中の状態
+  initialDeploymentConfig: InitialDeployedUnitConfig[]; // 初期配置画面で決定されたユニットの「設定」
+  allUnitsOnMap: PlacedUnit[]; // ゲームプレイ中の全ユニットの「インスタンス」リスト
 
   // アクション (状態を更新する関数)
   setAiDifficulty: (difficulty: AiDifficulty) => void;
@@ -43,20 +51,25 @@ interface GameSettingsState {
   setEnemyFaction: (faction: Faction) => void;
   setInitialCost: (cost: InitialCost) => void;
   setSelectedMapId: (mapId: string | null) => void;
-  setInitialDeployment: (deployment: PlacedUnit[]) => void; // 引数を PlacedUnit[] に変更
-  updatePlacedUnit: (instanceId: string, updates: Partial<PlacedUnit>) => void; // instanceIdでユニットを特定
-  // addPlacedUnit, removePlacedUnitなども将来的に必要
+
+  setInitialDeployment: (deploymentConfig: InitialDeployedUnitConfig[], unitsDataMap: Map<string, UnitData>) => void;
+  // allUnitsOnMap は setInitialDeployment 内で初期化される
+  updateUnitOnMap: (instanceId: string, updates: Partial<Omit<PlacedUnit, 'instanceId' | 'unitId'>>) => void;
+  addUnitToMap: (unit: PlacedUnit) => void; // 新規ユニット追加用
+  removeUnitFromMap: (instanceId: string) => void; // ユニット削除用
 }
 
 // Zustandストアの作成
-export const useGameSettingsStore = create<GameSettingsState>((set) => ({
+export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
   // 初期状態
   aiDifficulty: 'normal',
   playerFaction: 'alpha_force',
   enemyFaction: 'bravo_corp',
-  initialCost: 500, // 要件定義補足資料からのデフォルト初期コスト
+  initialCost: 500,
   selectedMapId: null,
-  initialDeployment: [], // 初期状態は空
+
+  initialDeploymentConfig: [],
+  allUnitsOnMap: [],
 
   // アクションの実装
   setAiDifficulty: (difficulty) => set({ aiDifficulty: difficulty }),
@@ -64,20 +77,47 @@ export const useGameSettingsStore = create<GameSettingsState>((set) => ({
   setEnemyFaction: (faction) => set({ enemyFaction: faction }),
   setInitialCost: (cost) => set({ initialCost: cost }),
   setSelectedMapId: (mapId) => set({ selectedMapId: mapId }),
-  setInitialDeployment: (deployment) => set({ initialDeployment: deployment }), // シンプルにセット
-  updatePlacedUnit: (instanceIdToUpdate, updates) => set(state => ({
-    initialDeployment: state.initialDeployment.map(unit =>
-      // unit.instanceId === instanceIdToUpdate // 将来的に instanceId を使う
-      // 現状は unit.unitId と instanceIdToUpdate (これも unitId になっているはず) で比較するが、
-      // 同じ種類のユニットが複数いると問題になる
-      (unit as any).unitId === instanceIdToUpdate // PlacedUnitにinstanceIdがない場合の仮対応
-        ? { ...unit, ...updates }
-        : unit
-    )
-  })),
+
+  setInitialDeployment: (deploymentConfig, unitsDataMap) => {
+    const placedUnits: PlacedUnit[] = deploymentConfig.map((depUnitConfig, index) => {
+      const unitDef = unitsDataMap.get(depUnitConfig.unitId);
+      const uniqueInstanceId = `${depUnitConfig.unitId}_${Date.now()}_${index}_${Math.random().toString(16).slice(2)}`;
+
+      return {
+        instanceId: uniqueInstanceId,
+        unitId: depUnitConfig.unitId,
+        name: unitDef?.name || depUnitConfig.name, // 定義があればそちらを優先
+        cost: unitDef?.cost || depUnitConfig.cost, // 定義があればそちらを優先
+        position: depUnitConfig.position,
+        currentHp: unitDef?.stats.hp || 10, // デフォルトHP (定義がなければ仮)
+        owner: 'player', // 現状はプレイヤーのみ
+        orientation: 0, // 初期向き (例: 0度 or 0-5の0)
+      };
+    });
+    set({ initialDeploymentConfig: deploymentConfig, allUnitsOnMap: [...placedUnits] });
+  },
+
+  updateUnitOnMap: (instanceIdToUpdate, updates) =>
+    set(state => ({
+      allUnitsOnMap: state.allUnitsOnMap.map(unit =>
+        unit.instanceId === instanceIdToUpdate
+          ? { ...unit, ...updates }
+          : unit
+      ),
+    })),
+
+  addUnitToMap: (newUnit) =>
+    set(state => ({
+      allUnitsOnMap: [...state.allUnitsOnMap, newUnit],
+    })),
+
+  removeUnitFromMap: (instanceIdToRemove) =>
+    set(state => ({
+      allUnitsOnMap: state.allUnitsOnMap.filter(unit => unit.instanceId !== instanceIdToRemove),
+    })),
 }));
 
-// 定数として選択肢をエクスポートしておくと便利 (変更なし)
+// 定数として選択肢をエクスポート (これは変更なし)
 export const aiDifficulties: { value: AiDifficulty, label: string }[] = [
   { value: 'easy', label: 'Easy' },
   { value: 'normal', label: 'Normal' },
