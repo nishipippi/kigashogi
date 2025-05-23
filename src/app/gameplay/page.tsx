@@ -14,7 +14,7 @@ import { ALL_UNITS, UNITS_MAP } from '@/gameData/units';
 import { hexDistance, logicalToAxial, axialToLogical, findPathAStar } from '@/lib/hexUtils';
 import { hasLineOfSight, calculateDamage } from '@/lib/battleUtils';
 import { canObserveTarget } from '@/lib/visibilityUtils';
-import { decideCommanderAIAction, decideCombatAIAction, type AIAction, resetGlobalAIBuildOrderIndex } from '@/lib/aiUtils'; // resetGlobalAIBuildOrderIndex をインポート
+import { decideCommanderAIAction, decideCombatAIAction, type AIAction, resetGlobalAIBuildOrderIndex } from '@/lib/aiUtils'; 
 
 const BASE_CAPTURE_DURATION_MS = 10000;
 const TICK_RATE_MS = 100;
@@ -29,39 +29,37 @@ function GameplayContent() {
   const searchParams = useSearchParams();
   const mapIdParam = searchParams.get('mapId');
 
-  const storeInitialCost = useGameSettingsStore(state => state.initialCost);
+  // const storeInitialCost = useGameSettingsStore(state => state.initialCost); // Not directly used, but good for context
   const selectedMapIdFromStore = useGameSettingsStore(state => state.selectedMapId);
-  const allUnitsOnMapFromStore = useGameSettingsStore(state => state.allUnitsOnMap); // allUnitsOnMap は配列なので注意
+  const allUnitsOnMapFromStore = useGameSettingsStore(state => state.allUnitsOnMap); 
   const gameOverMessage = useGameSettingsStore(state => state.gameOverMessage);
   const playerResources = useGameSettingsStore(state => state.playerResources);
   const enemyResourcesStore = useGameSettingsStore(state => state.enemyResources);
-  const victoryPoints = useGameSettingsStore(state => state.victoryPoints); // オブジェクトなので注意
+  const victoryPoints = useGameSettingsStore(state => state.victoryPoints); 
   const gameTimeFromStore = useGameSettingsStore(state => state.gameTimeElapsed);
   const gameTimeLimit = useGameSettingsStore(state => state.gameTimeLimit);
   const targetVictoryPoints = useGameSettingsStore(state => state.targetVictoryPoints);
-  const currentMapDataFromStore = useGameSettingsStore(state => state.currentMapDataState); // オブジェクトなので注意
+  const currentMapDataFromStore = useGameSettingsStore(state => state.currentMapDataState); 
 
   const {
     updateUnitOnMap,
-    setAllUnitsOnMap: setAllUnitsOnMapDirectly, // setAllUnitsOnMap の名前を setAllUnitsOnMapDirectly に変更
+    setAllUnitsOnMap: setAllUnitsOnMapDirectly, 
     setGameOver,
-    startUnitProduction: startUnitProductionAction, // startUnitProduction の名前を startUnitProductionAction に変更
-    clearCommanderProductionQueue: clearCommanderProductionQueueAction, // clearCommanderProductionQueue の名前を clearCommanderProductionQueueAction に変更
-    addUnitToMap: addUnitToMapAction, // addUnitToMap の名前を addUnitToMapAction に変更
-    addPlayerResources: addPlayerResourcesAction, // addPlayerResources の名前を addPlayerResourcesAction に変更
-    addEnemyResources: addEnemyResourcesAction, // addEnemyResources の名前を addEnemyResourcesAction に変更
-    setCurrentMapData: setMapDataInStore, // setCurrentMapData の名前を setMapDataInStore に変更
+    startUnitProduction: startUnitProductionAction, 
+    clearCommanderProductionQueue: clearCommanderProductionQueueAction, 
+    addUnitToMap: addUnitToMapAction, 
+    addPlayerResources: addPlayerResourcesAction, 
+    addEnemyResources: addEnemyResourcesAction, 
+    setCurrentMapData: setMapDataInStore, 
     updateStrategicPointState,
     addVictoryPointsToPlayer,
     incrementGameTime,
-    resetGameSessionState,
+    // resetGameSessionState, // resetGameSessionState is not called directly in GameplayContent initialization anymore
   } = useGameSettingsStore();
 
 
   const [selectedUnitInstanceId, setSelectedUnitInstanceId] = useState<string | null>(null);
   const [detailedSelectedUnitInfo, setDetailedSelectedUnitInfo] = useState<PlacedUnit | null>(null);
-  // attackTargetInstanceId はストアのユニット情報に含まれるため、ローカルステートは不要かも
-  // const [attackTargetInstanceId, setAttackTargetInstanceId] = useState<string | null>(null);
   const [attackingVisuals, setAttackingVisuals] = useState<{ attackerId: string, targetId: string, weaponType: 'HE' | 'AP' }[]>([]);
   const [visibleEnemyUnits, setVisibleEnemyUnits] = useState<PlacedUnit[]>([]);
   const [lastSeenEnemyUnits, setLastSeenEnemyUnits] = useState<Map<string, LastSeenUnitInfo>>(new Map());
@@ -72,19 +70,37 @@ function GameplayContent() {
   const gameTickRate = TICK_RATE_MS;
 
   useEffect(() => {
-    resetGameSessionState();
-    resetGlobalAIBuildOrderIndex(); // AIのビルドオーダーインデックスもリセット
+    // resetGameSessionState(); // <--- REMOVED THIS LINE
+    resetGlobalAIBuildOrderIndex(); 
     const mapIdToLoad = mapIdParam || selectedMapIdFromStore;
-    if (mapIdToLoad && ALL_MAPS_DATA[mapIdToLoad]) {
-      const mapData = JSON.parse(JSON.stringify(ALL_MAPS_DATA[mapIdToLoad])); // 深いコピーで元データを汚染しない
-      setMapDataInStore(mapData);
+    
+    const currentMapInStore = useGameSettingsStore.getState().currentMapDataState;
+    const unitsInStore = useGameSettingsStore.getState().allUnitsOnMap;
+
+    if (!currentMapInStore || currentMapInStore.id !== mapIdToLoad) {
+        if (mapIdToLoad && ALL_MAPS_DATA[mapIdToLoad]) {
+            const mapData = JSON.parse(JSON.stringify(ALL_MAPS_DATA[mapIdToLoad])); 
+            setMapDataInStore(mapData); 
+            console.log('[Gameplay] Map data loaded/updated in store for mapId:', mapIdToLoad);
+        } else {
+            console.warn(`[Gameplay] Map with id "${mapIdToLoad}" not found. Current store map ID: ${currentMapInStore?.id}`);
+            if (!mapIdToLoad && !currentMapInStore) {
+                 setMapDataInStore(null); 
+            }
+        }
     } else {
-      console.warn(`Map with id "${mapIdToLoad}" not found.`);
-      setMapDataInStore(null);
+        console.log('[Gameplay] Map data already in store and matches mapId:', currentMapInStore.id);
     }
+
+    if (unitsInStore.length === 0) {
+        console.warn("[Gameplay] GameplayContent mounted, but allUnitsOnMap in store is empty. This is problematic if units were expected from deployment.");
+        // Example: if (router) router.push('/unit-deployment'); // Or some other error handling
+    } else {
+        console.log('[Gameplay] Units found in store on mount:', unitsInStore.length, unitsInStore.filter(u => u.owner === 'player').length, 'player units.');
+    }
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapIdParam, selectedMapIdFromStore /*setMapDataInStore, resetGameSessionState を削除。無限ループの可能性回避*/]);
-  // setMapDataInStore と resetGameSessionState を依存配列から削除。これらは通常マップ変更時に一度だけ呼び出されるべき。
+  }, [mapIdParam, selectedMapIdFromStore, setMapDataInStore, router]);
 
   useEffect(() => {
     if (gameOverMessage) return;
@@ -240,7 +256,7 @@ function GameplayContent() {
         isTurning: needsToTurn,
         isMoving: canStartMoving,
         status: needsToTurn ? 'turning' : (canStartMoving ? 'moving' : 'idle'),
-        attackTargetInstanceId: null, // 移動開始時に攻撃目標をクリア
+        attackTargetInstanceId: null, 
     });
   }, [updateUnitOnMap, getTimeToTraverseHex]);
 
@@ -248,7 +264,6 @@ function GameplayContent() {
   useEffect(() => {
     const unitProcessInterval = setInterval(() => {
         const { gameOverMessage: currentGameOverMsg, allUnitsOnMap: currentUnitsFromStore, currentMapDataState: currentMapDataForLoop, enemyResources: currentEnemyResources } = useGameSettingsStore.getState();
-        // enemyResources を直接参照するように変更
         if (currentGameOverMsg) { clearInterval(unitProcessInterval); return; }
 
         const currentTime = Date.now();
@@ -446,7 +461,7 @@ function GameplayContent() {
                         weaponChoice = { type: 'AP', stats: unitDef.stats.apWeapon };
                     } else if (unitDef.stats.heWeapon && distance <= unitDef.stats.heWeapon.range) {
                         weaponChoice = { type: 'HE', stats: unitDef.stats.heWeapon };
-                    } else if (unitDef.stats.apWeapon && distance <= unitDef.stats.apWeapon.range) {
+                    } else if (unitDef.stats.apWeapon && distance <= unitDef.stats.apWeapon.range) { // Fallback to AP if HE not suitable or out of range
                         weaponChoice = { type: 'AP', stats: unitDef.stats.apWeapon };
                     }
                 }
@@ -495,16 +510,24 @@ function GameplayContent() {
                     const producedUnitDef = UNITS_MAP.get(producedUnitId);
                     if (producedUnitDef) {
                         let spawnPos: {x: number, y: number} | null = null;
-                        const trySpawnPos = { x: unit.position.x, y: unit.position.y + 1 };
-                        const trySpawnAxial = logicalToAxial(trySpawnPos.x, trySpawnPos.y);
-                        const spawnHexKey = `${trySpawnAxial.q},${trySpawnAxial.r}`;
-                        const isSpawnValid = currentMapDataForLoop?.hexes[spawnHexKey] && TERRAIN_MOVE_COSTS[currentMapDataForLoop.hexes[spawnHexKey].terrain] !== Infinity;
-                        const isSpawnOccupied = currentUnitsFromStore.some(u => u.position.x === trySpawnPos.x && u.position.y === trySpawnPos.y && u.status !== 'destroyed');
-
-                        if (isSpawnValid && !isSpawnOccupied) {
-                            spawnPos = trySpawnPos;
-                        } else {
-                             console.warn(`Player Commander ${unit.instanceId}: Spawn pos for ${producedUnitDef.name} invalid or occupied.`);
+                        // Attempt to spawn adjacent, prefer "below" (positive Y offset) for player
+                        const spawnCandidates = [
+                            { x: unit.position.x, y: unit.position.y + 1 }, { x: unit.position.x + 1, y: unit.position.y },
+                            { x: unit.position.x - 1, y: unit.position.y }, { x: unit.position.x, y: unit.position.y - 1 },
+                            { x: unit.position.x + 1, y: unit.position.y + 1 }, { x: unit.position.x -1, y: unit.position.y -1}
+                        ];
+                        for(const trySpawnPos of spawnCandidates){
+                            const trySpawnAxial = logicalToAxial(trySpawnPos.x, trySpawnPos.y);
+                            const spawnHexKey = `${trySpawnAxial.q},${trySpawnAxial.r}`;
+                            const isSpawnValid = currentMapDataForLoop?.hexes[spawnHexKey] && TERRAIN_MOVE_COSTS[currentMapDataForLoop.hexes[spawnHexKey].terrain] !== Infinity;
+                            const isSpawnOccupied = currentUnitsFromStore.some(u => u.position.x === trySpawnPos.x && u.position.y === trySpawnPos.y && u.status !== 'destroyed');
+                            if (isSpawnValid && !isSpawnOccupied) {
+                                spawnPos = trySpawnPos;
+                                break;
+                            }
+                        }
+                        if (!spawnPos) {
+                             console.warn(`Player Commander ${unit.instanceId}: All adjacent spawn positions for ${producedUnitDef.name} invalid or occupied.`);
                         }
 
                         if (spawnPos) {
@@ -525,10 +548,9 @@ function GameplayContent() {
                 }
             }
 
-            // AIユニットの行動決定と実行
             if (unit.owner === 'enemy' && !currentGameOverMsg) {
                 let aiDecision: AIAction | null = null;
-                const currentGameTimeForAI = useGameSettingsStore.getState().gameTimeElapsed; // AI行動決定用に最新の時間を取得
+                const currentGameTimeForAI = useGameSettingsStore.getState().gameTimeElapsed; 
 
                 if (unitDef.isCommander) {
                     aiDecision = decideCommanderAIAction(unit, unitDef, currentUnitsFromStore, currentEnemyResources, currentMapDataForLoop, currentGameTimeForAI);
@@ -541,9 +563,9 @@ function GameplayContent() {
                         case 'PRODUCE':
                             if (aiDecision.targetUnitId) {
                                 const prodResult = startUnitProductionAction(unit.instanceId, aiDecision.targetUnitId, 'enemy');
-                                if (!prodResult.success && prodResult.message !== "Commander is already producing." && prodResult.message !== "Not enough resources.") {
+                                // if (!prodResult.success && prodResult.message !== "Commander is already producing." && prodResult.message !== "Not enough resources.") {
                                     // console.warn(`AI Prod Fail for ${unit.name} (${unit.instanceId.slice(-4)}): ${prodResult.message} trying to build ${aiDecision.targetUnitId}`);
-                                }
+                                // }
                             }
                             break;
                         case 'MOVE':
@@ -588,22 +610,31 @@ function GameplayContent() {
                     const producedUnitDef = UNITS_MAP.get(producedUnitId);
                     if (producedUnitDef) {
                         let spawnPos: {x: number, y: number} | null = null;
-                        const trySpawnPos = { x: unit.position.x, y: unit.position.y - 1 };
-                        const trySpawnAxial = logicalToAxial(trySpawnPos.x, trySpawnPos.y);
-                        const spawnHexKey = `${trySpawnAxial.q},${trySpawnAxial.r}`;
-                        const isSpawnValid = currentMapDataForLoop?.hexes[spawnHexKey] && TERRAIN_MOVE_COSTS[currentMapDataForLoop.hexes[spawnHexKey].terrain] !== Infinity;
-                        const isSpawnOccupied = currentUnitsFromStore.some(u => u.position.x === trySpawnPos.x && u.position.y === trySpawnPos.y && u.status !== 'destroyed');
-
-                        if (isSpawnValid && !isSpawnOccupied) {
-                            spawnPos = trySpawnPos;
-                        } else {
-                            console.warn(`AI Commander ${unit.instanceId}: Spawn pos for ${producedUnitDef.name} invalid or occupied.`);
+                         // Attempt to spawn adjacent, prefer "above" (negative Y offset) for AI
+                        const spawnCandidates = [
+                            { x: unit.position.x, y: unit.position.y - 1 }, { x: unit.position.x + 1, y: unit.position.y },
+                            { x: unit.position.x - 1, y: unit.position.y }, { x: unit.position.x, y: unit.position.y + 1 },
+                            { x: unit.position.x + 1, y: unit.position.y - 1 }, { x: unit.position.x -1, y: unit.position.y + 1}
+                        ];
+                         for(const trySpawnPos of spawnCandidates){
+                            const trySpawnAxial = logicalToAxial(trySpawnPos.x, trySpawnPos.y);
+                            const spawnHexKey = `${trySpawnAxial.q},${trySpawnAxial.r}`;
+                            const isSpawnValid = currentMapDataForLoop?.hexes[spawnHexKey] && TERRAIN_MOVE_COSTS[currentMapDataForLoop.hexes[spawnHexKey].terrain] !== Infinity;
+                            const isSpawnOccupied = currentUnitsFromStore.some(u => u.position.x === trySpawnPos.x && u.position.y === trySpawnPos.y && u.status !== 'destroyed');
+                            if (isSpawnValid && !isSpawnOccupied) {
+                                spawnPos = trySpawnPos;
+                                break;
+                            }
+                        }
+                        if(!spawnPos){
+                            console.warn(`AI Commander ${unit.instanceId}: All adjacent spawn positions for ${producedUnitDef.name} invalid or occupied.`);
                         }
                         if (spawnPos) {
                             const newUnitInstanceId = `${producedUnitId}_enemy_${Date.now()}_${Math.random().toString(16).slice(2)}`;
                             const newPlacedUnit: PlacedUnit = {
                                 instanceId: newUnitInstanceId, unitId: producedUnitId, name: producedUnitDef.name, cost: producedUnitDef.cost,
                                 position: spawnPos, currentHp: producedUnitDef.stats.hp, owner: 'enemy', orientation: 180, status: 'idle',
+                                // ... (rest of properties)
                                 isTurning: false, isMoving: false, moveTargetPosition: null, currentPath: null, timeToNextHex: null,
                                 attackTargetInstanceId: null, lastAttackTimeHE: undefined, lastAttackTimeAP: undefined, lastSuccessfulAttackTimestamp: undefined,
                                 justHit: false, hitTimestamp: undefined, productionQueue: null,
@@ -626,9 +657,14 @@ function GameplayContent() {
         if (!currentGameOverMsg) {
             const anyPlayerUnitsExist = currentAliveUnits.some(u => u.owner === 'player');
             const anyEnemyUnitsExist = currentAliveUnits.some(u => u.owner === 'enemy');
-            if (anyPlayerUnitsExist && playerCommandersAlive === 0) {
+
+            // Check for commander loss only if there are any units of that type left
+            // to prevent issues if a commander was never deployed (though setInitialDeployment aims to prevent this)
+            const playerCommanderDef = ALL_UNITS.find(u => u.isCommander);
+            
+            if (playerCommanderDef && anyPlayerUnitsExist && playerCommandersAlive === 0) {
                 setGameOver("Enemy Wins! (Player Commander Lost)");
-            } else if (anyEnemyUnitsExist && enemyCommandersAlive === 0) {
+            } else if (playerCommanderDef && anyEnemyUnitsExist && enemyCommandersAlive === 0) {
                 setGameOver("Player Wins! (Enemy Commander Lost)");
             }
         }
@@ -636,7 +672,7 @@ function GameplayContent() {
     }, gameTickRate);
     return () => clearInterval(unitProcessInterval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [/* 依存配列を最新化 */ updateUnitOnMap, setAllUnitsOnMapDirectly, setGameOver, updateStrategicPointState, visibleEnemyUnits, lastSeenEnemyUnits, addUnitToMapAction, clearCommanderProductionQueueAction, startUnitProductionAction, addPlayerResourcesAction, addEnemyResourcesAction, /*enemyResourcesStore,*/ incrementGameTime, /*playerVP, enemyVP, gameTimeLimit, targetVictoryPoints,*/ initiateMove, getTimeToTraverseHex, gameOverMessage, playerResources, /*currentMapDataFromStore*/]);
+  }, [ updateUnitOnMap, setAllUnitsOnMapDirectly, setGameOver, updateStrategicPointState, visibleEnemyUnits, lastSeenEnemyUnits, addUnitToMapAction, clearCommanderProductionQueueAction, startUnitProductionAction, addPlayerResourcesAction, addEnemyResourcesAction, incrementGameTime, initiateMove, getTimeToTraverseHex, gameOverMessage, playerResources ]);
 
 
   const handleAttackCommand = useCallback((targetUnit: PlacedUnit) => {
@@ -679,10 +715,11 @@ function GameplayContent() {
                 isMoving: false, status: 'aiming', currentPath: null,
             });
         } else {
-            updateUnitOnMap(attacker.instanceId, { attackTargetInstanceId: targetUnit.instanceId, status: 'idle' });
+            // If not in range for direct attack, set attack target and then initiate move.
+            // The unitProcessInterval will handle engaging once in range and LoS.
+            updateUnitOnMap(attacker.instanceId, { attackTargetInstanceId: targetUnit.instanceId, status: 'idle' }); // Set target, status will become moving
             initiateMove(attacker, targetUnit.position.x, targetUnit.position.y);
         }
-        // setAttackTargetInstanceId(targetUnit.instanceId); // ストアで管理するため不要
     }
   }, [selectedUnitInstanceId, updateUnitOnMap, initiateMove]);
 
@@ -690,26 +727,29 @@ function GameplayContent() {
     const currentUnits = useGameSettingsStore.getState().allUnitsOnMap;
     const selectedUnit = selectedUnitInstanceId ? currentUnits.find(u => u.instanceId === selectedUnitInstanceId) : null;
 
-    if (event?.button === 2) {
+    if (event?.button === 2) { // Right-click
       event.preventDefault();
       if (selectedUnit && selectedUnit.owner === 'player') {
-        initiateMove(selectedUnit, logicalX, logicalY);
+        // If right-clicked on an enemy unit, command attack
+        if (unitOnHex && unitOnHex.owner === 'enemy') {
+            handleAttackCommand(unitOnHex);
+        } else { // Else, command move
+            initiateMove(selectedUnit, logicalX, logicalY);
+             if(selectedUnit) updateUnitOnMap(selectedUnit.instanceId, { attackTargetInstanceId: null }); // Clear attack target on move
+        }
       }
-      // setAttackTargetInstanceId(null); // ストアで管理するため不要
-      if(selectedUnit) updateUnitOnMap(selectedUnit.instanceId, { attackTargetInstanceId: null });
       return;
     }
 
-    if (event?.ctrlKey && unitOnHex && selectedUnit) {
+    // Left-click
+    if (event?.ctrlKey && unitOnHex && selectedUnit) { // Ctrl+Left-click on a unit (implies attack for player units)
       if (selectedUnit.owner === 'player' && unitOnHex.owner === 'enemy' && selectedUnit.instanceId !== unitOnHex.instanceId) {
           handleAttackCommand(unitOnHex);
       }
-    } else if (unitOnHex) {
+    } else if (unitOnHex) { // Simple Left-click on a unit (selects it)
       setSelectedUnitInstanceId(unitOnHex.instanceId);
-      // setAttackTargetInstanceId(null); // ストアで管理するため不要
-    } else {
+    } else { // Simple Left-click on empty hex (deselects)
       setSelectedUnitInstanceId(null);
-      // setAttackTargetInstanceId(null); // ストアで管理するため不要
     }
   }, [selectedUnitInstanceId, initiateMove, handleAttackCommand, updateUnitOnMap]);
 
@@ -724,7 +764,7 @@ function GameplayContent() {
         const unit = useGameSettingsStore.getState().allUnitsOnMap.find(u => u.instanceId === selectedUnitInstanceId);
         setDetailedSelectedUnitInfo(unit || null);
     } else { setDetailedSelectedUnitInfo(null); }
-  }, [selectedUnitInstanceId, allUnitsOnMapFromStore]);
+  }, [selectedUnitInstanceId, allUnitsOnMapFromStore]); // Listen to allUnitsOnMapFromStore for updates
 
   useEffect(() => {
     const currentGameOverMsg = useGameSettingsStore.getState().gameOverMessage;
@@ -734,7 +774,7 @@ function GameplayContent() {
             let status = "draw";
             if (currentGameOverMsg.includes("Player Wins")) status = "win";
             else if (currentGameOverMsg.includes("Enemy Wins") || currentGameOverMsg.includes("Surrendered")) status = "lose";
-            router.push(`/results?status=${status}&mapId=${mapIdParam || selectedMapIdFromStore || 'unknown'}&reason=${encodeURIComponent(currentGameOverMsg)}`);
+            if (router) router.push(`/results?status=${status}&mapId=${mapIdParam || selectedMapIdFromStore || 'unknown'}&reason=${encodeURIComponent(currentGameOverMsg)}`);
         }, 3000);
     }
   }, [gameOverMessage, router, mapIdParam, selectedMapIdFromStore]);
@@ -878,7 +918,7 @@ function GameplayContent() {
           <GameplayHexGrid
             mapData={currentMapDataFromStore}
             hexSize={28}
-            placedUnits={unitsToDisplayOnGrid}
+            placedUnits={unitsToDisplayOnGrid} // Use unitsToDisplayOnGrid which includes player units
             onHexClick={handleHexClickInGame}
             selectedUnitInstanceId={selectedUnitInstanceId}
             attackingPairs={attackingVisuals}
