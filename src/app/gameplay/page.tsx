@@ -7,10 +7,10 @@ import { Suspense, useState, useEffect, useCallback } from 'react';
 import { useGameSettingsStore, type PlacedUnit } from '@/stores/gameSettingsStore';
 import type { UnitData } from '@/types/unit';
 import GameplayHexGrid from '@/components/game/GameplayHexGrid';
-import { ALL_MAPS_DATA } from '@/gameData/maps'; // ALL_MAPS_DATA はここから
+import { ALL_MAPS_DATA } from '@/gameData/maps'; 
 import type { MapData } from '@/types/map';      // MapData 型はここから
 import { UNITS_MAP } from '@/gameData/units';
-import { hexDistance, logicalToAxial } from '@/lib/hexUtils';
+import { hexDistance, logicalToAxial, getHexLinePath } from '@/lib/hexUtils';
 
 function GameplayContent() {
   const router = useRouter();
@@ -18,10 +18,11 @@ function GameplayContent() {
   const mapIdParam = searchParams.get('mapId');
 
   const storeInitialCost = useGameSettingsStore(state => state.initialCost);
-  // initialDeploymentFromStore は直接は使わず、allUnitsOnMap をストアから購読
+  const initialDeploymentFromStore = useGameSettingsStore(state => state.initialDeployment); // これは最初の読み込みに使う
   const selectedMapIdFromStore = useGameSettingsStore(state => state.selectedMapId);
   const allUnitsOnMap = useGameSettingsStore(state => state.allUnitsOnMap);
   const updateUnitOnMap = useGameSettingsStore(state => state.updateUnitOnMap);
+  const setAllUnitsOnMap = useGameSettingsStore(state => state.setAllUnitsOnMap); // ゲーム開始時に使う
 
   const [currentMapData, setCurrentMapData] = useState<MapData | null>(null);
   const [gameTime, setGameTime] = useState(0);
@@ -30,8 +31,9 @@ function GameplayContent() {
 
   const [selectedUnitInstanceId, setSelectedUnitInstanceId] = useState<string | null>(null);
   const [detailedSelectedUnitInfo, setDetailedSelectedUnitInfo] = useState<PlacedUnit | null>(null);
+  // const [targetMovePosition, setTargetMovePosition] = useState<{ x: number; y: number } | null>(null); // ユニットごとの状態に移行
   const [attackTargetInstanceId, setAttackTargetInstanceId] = useState<string | null>(null);
-  // targetMovePosition はコンポーネントstateから削除され、各ユニットのプロパティとして管理
+
 
   const COST_REVENUE_INTERVAL = 10000;
   const COST_REVENUE_AMOUNT = 50;
@@ -49,6 +51,19 @@ function GameplayContent() {
     setResources(storeInitialCost);
   }, [storeInitialCost]);
 
+  // ゲーム開始時にストアの initialDeployment を allUnitsOnMap にコピーする処理 (一度だけ)
+  useEffect(() => {
+    if (initialDeploymentFromStore && initialDeploymentFromStore.length > 0 && allUnitsOnMap.length === 0) {
+        // ストアの allUnitsOnMap を初期配置で設定する (もしくは setInitialDeployment で既に行われている)
+        // ここでは、initialDeploymentFromStore を直接 setAllUnitsOnMap に渡すのが素直
+        // ただし、ストアの setInitialDeployment で既に allUnitsOnMap も更新されているなら不要
+        // 現状のストアの setInitialDeployment は allUnitsOnMap も更新するので、この useEffect は不要かもしれない。
+        // 安全のため、allUnitsOnMapが空の場合のみ実行する形にするか、ストアのロジックを信頼する。
+        // setAllUnitsOnMap(initialDeploymentFromStore);
+    }
+  }, [initialDeploymentFromStore, allUnitsOnMap, setAllUnitsOnMap]);
+
+
   useEffect(() => {
     const timer = setInterval(() => setGameTime(prev => prev + 1), 1000);
     const revenueTimer = setInterval(() => setResources(prev => prev + COST_REVENUE_AMOUNT), COST_REVENUE_INTERVAL);
@@ -56,227 +71,285 @@ function GameplayContent() {
     return () => { clearInterval(timer); clearInterval(revenueTimer); clearInterval(vpTimer); };
   }, []);
 
-  const initiateMove = useCallback((unitToMove: PlacedUnit, targetX: number, targetY: number) => {
+
+  const initiateMove = useCallback((unitToMove: PlacedUnit, targetLogicalX: number, targetLogicalY: number) => {
     const unitDef = UNITS_MAP.get(unitToMove.unitId);
     if (!unitDef) return;
 
-    const dx = targetX - unitToMove.position.x;
-    const dy = targetY - unitToMove.position.y;
-    let newTargetOrientation = unitToMove.orientation;
-    if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
-        const angleRad = Math.atan2(dy, dx);
-        let angleDeg = angleRad * (180 / Math.PI);
-        if (angleDeg < 0) angleDeg += 360;
-        newTargetOrientation = Math.round(angleDeg / 60) % 6;
+    const startAxial = logicalToAxial(unitToMove.position.x, unitToMove.position.y);
+    const targetAxial = logicalToAxial(targetLogicalX, targetLogicalY);
+    let path = getHexLinePath(startAxial.q, startAxial.r, targetAxial.q, targetAxial.r);
+
+    if (path.length === 0 && (unitToMove.position.x !== targetLogicalX || unitToMove.position.y !== targetLogicalY)) {
+        path.push({ x: targetLogicalX, y: targetLogicalY });
     }
 
-    const needsToTurn = newTargetOrientation !== unitToMove.orientation && unitDef.stats.turnSpeed !== undefined && unitDef.stats.turnSpeed > 0;
+    if (path.length > 0) {
+        const firstStep = path[0];
+        const dx = firstStep.x - unitToMove.position.x;
+        const dy = firstStep.y - unitToMove.position.y;
+        let newTargetOrientation = unitToMove.orientation;
+        if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+            const angleRad = Math.atan2(dy, dx);
+            newTargetOrientation = (angleRad * (180 / Math.PI) + 360) % 360;
+        }
 
-    updateUnitOnMap(unitToMove.instanceId, {
-        moveTargetPosition: { x: targetX, y: targetY },
-        targetOrientation: newTargetOrientation,
-        isTurning: needsToTurn,
-        isMoving: !needsToTurn,
-    });
+        const needsToTurn = Math.abs(newTargetOrientation - unitToMove.orientation) > 1 &&
+                            unitDef.stats.turnSpeed !== undefined && unitDef.stats.turnSpeed > 0;
+        const timePerHex = (1 / (unitDef.stats.moveSpeed || 1)) * 1000;
+
+        updateUnitOnMap(unitToMove.instanceId, {
+            currentPath: path,
+            timeToNextHex: needsToTurn ? null : timePerHex,
+            moveTargetPosition: { x: targetLogicalX, y: targetLogicalY },
+            targetOrientation: newTargetOrientation,
+            isTurning: needsToTurn,
+            isMoving: !needsToTurn,
+            status: needsToTurn ? 'turning' : 'moving',
+        });
+    } else {
+        updateUnitOnMap(unitToMove.instanceId, {
+            currentPath: null, timeToNextHex: null, isMoving: false, status: 'idle'
+        });
+    }
   }, [updateUnitOnMap]);
 
-  // ユニットの更新ループ (旋回と移動)
-  useEffect(() => {
-    const unitProcessInterval = setInterval(() => {
-      // allUnitsOnMap はストアから最新のものを取得している想定だが、
-      // このループ内で直接ストアの値を参照するとuseEffectの依存関係が複雑になるため、
-      // useGameSettingsStore.getState().allUnitsOnMap を使うか、
-      // allUnitsOnMap を依存配列に入れてループ内で最新の値を使う。
-      // ここでは、依存配列に入っている allUnitsOnMap (ループ開始時のスナップショット) を使う。
-      // ストアが更新されると、このuseEffectが再実行され、新しい allUnitsOnMap でループが回る。
-      const currentUnits = useGameSettingsStore.getState().allUnitsOnMap; // ★ ループ内で最新のストア状態を取得
 
-      currentUnits.forEach(unit => {
+  useEffect(() => {
+    const tickRate = 100;
+    const unitProcessInterval = setInterval(() => {
+      const currentTime = Date.now(); // 攻撃間隔チェック用
+      allUnitsOnMap.forEach(unit => {
         if (!unit) return;
         const unitDef = UNITS_MAP.get(unit.unitId);
         if (!unitDef) return;
 
         // 旋回処理
         if (unit.isTurning && unit.targetOrientation !== undefined) {
-          const currentOrientation = unit.orientation;
-          const targetOrientation = unit.targetOrientation;
-          // const turnSpeedDegPerTick = (unitDef.stats.turnSpeed || 3600) / (1000 / 100); // 将来的に使用
+            const turnSpeedDegPerTick = (unitDef.stats.turnSpeed || 3600) / (1000 / tickRate);
+            let currentOrientation = unit.orientation;
+            const targetOrientation = unit.targetOrientation;
+            let diff = targetOrientation - currentOrientation;
+            if (diff > 180) diff -= 360;
+            if (diff < -180) diff += 360;
 
-          let diff = (targetOrientation - currentOrientation + 6) % 6;
-          let newOrientation = currentOrientation;
-
-          if (diff !== 0) {
-            if (diff <= 3) { newOrientation = (currentOrientation + 1) % 6; }
-            else { newOrientation = (currentOrientation - 1 + 6) % 6; }
-
-            if (newOrientation === targetOrientation) {
-              updateUnitOnMap(unit.instanceId, {
-                orientation: newOrientation,
-                isTurning: false,
-                isMoving: !!unit.moveTargetPosition,
-              });
-            } else {
-              updateUnitOnMap(unit.instanceId, { orientation: newOrientation });
-            }
-          } else {
-            updateUnitOnMap(unit.instanceId, {
-              isTurning: false,
-              isMoving: !!unit.moveTargetPosition,
-            });
-          }
-        }
-        // 移動処理
-        else if (unit.isMoving && unit.moveTargetPosition) {
-          const currentPos = unit.position;
-          const targetPos = unit.moveTargetPosition;
-          let newX = currentPos.x;
-          let newY = currentPos.y;
-
-          const stepSize = (unitDef.stats.moveSpeed || 1) * 0.1; // 1tick(100ms)での移動距離
-
-          const dxTotal = targetPos.x - currentPos.x;
-          const dyTotal = targetPos.y - currentPos.y;
-          const distanceToTarget = Math.sqrt(dxTotal * dxTotal + dyTotal * dyTotal);
-
-          if (distanceToTarget < stepSize) {
-            updateUnitOnMap(unit.instanceId, {
-              position: targetPos,
-              isMoving: false,
-              moveTargetPosition: null,
-            });
-            console.log(`Unit ${unit.instanceId} arrived at (${targetPos.x.toFixed(1)}, ${targetPos.y.toFixed(1)})`);
-          } else {
-            newX += (dxTotal / distanceToTarget) * stepSize;
-            newY += (dyTotal / distanceToTarget) * stepSize;
-
-            // 移動中に再度向きを計算
-            const dxNext = targetPos.x - newX;
-            const dyNext = targetPos.y - newY;
-            let nextTargetOrientation = unit.orientation;
-            if (Math.abs(dxNext) > 0.01 || Math.abs(dyNext) > 0.01) {
-                const angleRad = Math.atan2(dyNext, dxNext);
-                let angleDeg = angleRad * (180 / Math.PI);
-                if (angleDeg < 0) angleDeg += 360;
-                nextTargetOrientation = Math.round(angleDeg / 60) % 6;
-            }
-
-            if (nextTargetOrientation !== unit.orientation && unitDef.stats.turnSpeed && (Math.abs(nextTargetOrientation - unit.orientation) % 6 !== 0) ) {
-                 updateUnitOnMap(unit.instanceId, {
-                    position: { x: parseFloat(newX.toFixed(2)), y: parseFloat(newY.toFixed(2)) },
-                    targetOrientation: nextTargetOrientation,
-                    isTurning: true,
-                    isMoving: false
-                });
-            } else {
+            let newOrientation = currentOrientation;
+            if (Math.abs(diff) < turnSpeedDegPerTick || Math.abs(diff) < 0.1) {
+                newOrientation = targetOrientation;
+                const timePerHex = (1 / (unitDef.stats.moveSpeed || 1)) * 1000;
                 updateUnitOnMap(unit.instanceId, {
-                    position: { x: parseFloat(newX.toFixed(2)), y: parseFloat(newY.toFixed(2)) },
-                    orientation: nextTargetOrientation // 向きも更新
+                    orientation: newOrientation,
+                    isTurning: false,
+                    isMoving: !!unit.currentPath && unit.currentPath.length > 0,
+                    timeToNextHex: (!!unit.currentPath && unit.currentPath.length > 0) ? timePerHex : null,
+                    targetOrientation: undefined,
+                    status: (!!unit.currentPath && unit.currentPath.length > 0) ? 'moving' : 'idle',
                 });
+            } else {
+                newOrientation = (currentOrientation + Math.sign(diff) * turnSpeedDegPerTick + 360) % 360;
+                updateUnitOnMap(unit.instanceId, { orientation: newOrientation });
             }
-          }
+        }
+        // 移動処理 (ステップベース)
+        else if (unit.isMoving && unit.currentPath && unit.currentPath.length > 0 && unit.timeToNextHex !== null && unit.timeToNextHex !== undefined) {
+            let newTimeToNextHex = unit.timeToNextHex - tickRate;
+
+            if (newTimeToNextHex <= 0) {
+                const nextPosition = unit.currentPath[0];
+                const remainingPath = unit.currentPath.slice(1);
+                let newOrientation = unit.orientation;
+
+                if (remainingPath.length > 0) {
+                    const nextNextPosition = remainingPath[0];
+                    const dx = nextNextPosition.x - nextPosition.x;
+                    const dy = nextNextPosition.y - nextPosition.y;
+                    if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+                        const angleRad = Math.atan2(dy, dx);
+                        newOrientation = (angleRad * (180 / Math.PI) + 360) % 360;
+                    }
+                    const needsToTurn = Math.abs(newOrientation - unit.orientation) > 1 &&
+                                        unitDef.stats.turnSpeed !== undefined && unitDef.stats.turnSpeed > 0;
+                    const timePerHex = (1 / (unitDef.stats.moveSpeed || 1)) * 1000;
+                    updateUnitOnMap(unit.instanceId, {
+                        position: nextPosition,
+                        orientation: needsToTurn ? unit.orientation : newOrientation,
+                        currentPath: remainingPath,
+                        timeToNextHex: needsToTurn ? null : timePerHex,
+                        isMoving: !needsToTurn,
+                        isTurning: needsToTurn,
+                        targetOrientation: needsToTurn ? newOrientation : undefined,
+                        status: needsToTurn ? 'turning' : 'moving',
+                    });
+                } else { // 最終目的地に到達
+                    updateUnitOnMap(unit.instanceId, {
+                        position: nextPosition,
+                        orientation: newOrientation, // 最終的な向き
+                        currentPath: null,
+                        timeToNextHex: null,
+                        isMoving: false,
+                        isTurning: false,
+                        moveTargetPosition: null,
+                        status: 'idle',
+                    });
+                    console.log(`Unit ${unit.instanceId} arrived at final destination (${nextPosition.x}, ${nextPosition.y})`);
+                }
+            } else {
+                updateUnitOnMap(unit.instanceId, { timeToNextHex: newTimeToNextHex });
+            }
+        }
+        // 攻撃処理の準備
+        else if (unit.attackTargetInstanceId && (unit.status === 'aiming' || unit.status === 'attacking_he' || unit.status === 'attacking_ap' || unit.status === 'reloading_he' || unit.status === 'reloading_ap')) {
+            if (unit.isTurning || unit.isMoving) { return; } // 移動中や旋回中は攻撃準備中断
+
+            const targetUnit = allUnitsOnMap.find(u => u.instanceId === unit.attackTargetInstanceId);
+            if (!targetUnit || !unitDef) {
+                updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null });
+                return;
+            }
+
+            const dx = targetUnit.position.x - unit.position.x;
+            const dy = targetUnit.position.y - unit.position.y;
+            let requiredOrientationDeg = unit.orientation;
+            if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+                const angleRad = Math.atan2(dy, dx);
+                requiredOrientationDeg = (angleRad * (180 / Math.PI) + 360) % 360;
+            }
+            if (Math.abs(requiredOrientationDeg - unit.orientation) > 5) {
+                updateUnitOnMap(unit.instanceId, { targetOrientation: requiredOrientationDeg, isTurning: true, status: 'aiming' });
+                return;
+            }
+
+            const attackerPosAxial = logicalToAxial(unit.position.x, unit.position.y);
+            const targetPosAxial = logicalToAxial(targetUnit.position.x, targetUnit.position.y);
+            const distance = hexDistance(attackerPosAxial.q, attackerPosAxial.r, targetPosAxial.q, targetPosAxial.r);
+
+            let weaponToUse: { type: 'HE' | 'AP', stats: NonNullable<UnitData['stats']['heWeapon'] | UnitData['stats']['apWeapon']> } | null = null;
+            if (unitDef.stats.apWeapon && distance <= unitDef.stats.apWeapon.range) {
+                weaponToUse = { type: 'AP', stats: unitDef.stats.apWeapon };
+            } else if (unitDef.stats.heWeapon && distance <= unitDef.stats.heWeapon.range) {
+                weaponToUse = { type: 'HE', stats: unitDef.stats.heWeapon };
+            }
+
+            if (!weaponToUse) {
+                updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null });
+                return;
+            }
+
+            const attackIntervalMs = weaponToUse.stats.attackInterval * 1000;
+            const lastAttackTime = weaponToUse.type === 'HE' ? unit.lastAttackTimeHE : unit.lastAttackTimeAP;
+
+            if (unit.status === 'aiming' || (lastAttackTime && currentTime - lastAttackTime >= attackIntervalMs) ) {
+                if (unit.status !== `attacking_${weaponToUse.type.toLowerCase() as 'he' | 'ap'}`) {
+                     console.log(`${unit.name} starts attacking ${targetUnit.name} with ${weaponToUse.type}`);
+                     updateUnitOnMap(unit.instanceId, {
+                        status: weaponToUse.type === 'HE' ? 'attacking_he' : 'attacking_ap',
+                        [weaponToUse.type === 'HE' ? 'lastAttackTimeHE' : 'lastAttackTimeAP']: currentTime
+                     });
+                }
+            } else if (lastAttackTime && currentTime - lastAttackTime < attackIntervalMs) {
+                const newStatus = weaponToUse.type === 'HE' ? 'reloading_he' : 'reloading_ap';
+                if (unit.status !== newStatus) {
+                    updateUnitOnMap(unit.instanceId, { status: newStatus });
+                }
+            }
         }
       });
-    }, 100);
-
+    }, tickRate);
     return () => clearInterval(unitProcessInterval);
-  }, [updateUnitOnMap]); // allUnitsOnMap を依存配列から削除 (ループ内でgetStateするため)
+  }, [allUnitsOnMap, updateUnitOnMap]);
 
 
   const handleAttackCommand = useCallback((targetUnit: PlacedUnit) => {
-    if (!selectedUnitInstanceId) return;
-    const currentAllUnits = useGameSettingsStore.getState().allUnitsOnMap; // 最新のユニット情報を取得
-    const attacker = currentAllUnits.find(u => u.instanceId === selectedUnitInstanceId);
+    if (!selectedUnitInstanceId || !allUnitsOnMap) return;
+    const attacker = allUnitsOnMap.find(u => u.instanceId === selectedUnitInstanceId);
     const attackerDef = attacker ? UNITS_MAP.get(attacker.unitId) : null;
 
     if (attacker && attackerDef && targetUnit) {
         console.log(`Attack command: ${attacker.name} -> ${targetUnit.name}`);
-        setAttackTargetInstanceId(targetUnit.instanceId);
+        // setAttackTargetInstanceId(targetUnit.instanceId); // これはUI表示用なので、ストアの更新が主
 
         const attackerPosAxial = logicalToAxial(attacker.position.x, attacker.position.y);
         const targetPosAxial = logicalToAxial(targetUnit.position.x, targetUnit.position.y);
         const distance = hexDistance(attackerPosAxial.q, attackerPosAxial.r, targetPosAxial.q, targetPosAxial.r);
 
-        const heRange = attackerDef.stats.heWeapon?.range;
-        const apRange = attackerDef.stats.apWeapon?.range;
-        let isInRange = false;
-        let weaponUsed = "";
-
-        if (heRange !== undefined && distance <= heRange) { isInRange = true; weaponUsed = "HE"; }
-        if (apRange !== undefined && distance <= apRange) { isInRange = true; weaponUsed = "AP"; }
+        let weaponToUse: 'AP' | 'HE' | null = null;
+        let range = 0;
+        if (attackerDef.stats.apWeapon && distance <= attackerDef.stats.apWeapon.range) {
+            weaponToUse = 'AP';
+            range = attackerDef.stats.apWeapon.range;
+        } else if (attackerDef.stats.heWeapon && distance <= attackerDef.stats.heWeapon.range) {
+            weaponToUse = 'HE';
+            range = attackerDef.stats.heWeapon.range;
+        }
 
         const dx = targetUnit.position.x - attacker.position.x;
         const dy = targetUnit.position.y - attacker.position.y;
-        let newTargetOrientation = attacker.orientation;
+        let newTargetOrientationDeg = attacker.orientation;
         if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
             const angleRad = Math.atan2(dy, dx);
-            let angleDeg = angleRad * (180 / Math.PI);
-            if (angleDeg < 0) angleDeg += 360;
-            newTargetOrientation = Math.round(angleDeg / 60) % 6;
+            newTargetOrientationDeg = (angleRad * (180 / Math.PI) + 360) % 360;
         }
 
-        if (isInRange) {
-            console.log(`${weaponUsed} Weapon In range! Distance: ${distance.toFixed(1)}`);
-            if (newTargetOrientation !== attacker.orientation && attackerDef.stats.turnSpeed) {
-                updateUnitOnMap(attacker.instanceId, { targetOrientation: newTargetOrientation, isTurning: true, isMoving: false });
-            } else {
-                console.log("Facing target, ready to fire (actual firing not implemented)");
-            }
+        if (weaponToUse) {
+            console.log(`${weaponToUse} Weapon In range! Distance: ${distance.toFixed(1)}, Range: ${range}`);
+            updateUnitOnMap(attacker.instanceId, {
+                attackTargetInstanceId: targetUnit.instanceId,
+                moveTargetPosition: null,
+                targetOrientation: newTargetOrientationDeg,
+                isTurning: Math.abs(newTargetOrientationDeg - attacker.orientation) > 1 && !!attackerDef.stats.turnSpeed,
+                isMoving: false,
+                status: 'aiming',
+            });
         } else {
-            console.log(`Out of range. Distance: ${distance.toFixed(1)}`);
+            console.log(`Out of range for any weapon. Distance: ${distance.toFixed(1)}`);
+            // 攻撃対象を記憶しつつ移動開始
+            updateUnitOnMap(attacker.instanceId, { attackTargetInstanceId: targetUnit.instanceId, status: 'idle' });
             initiateMove(attacker, targetUnit.position.x, targetUnit.position.y);
         }
+        setAttackTargetInstanceId(targetUnit.instanceId); // UI表示用のコンポーネントstate
     }
-  }, [selectedUnitInstanceId, updateUnitOnMap, initiateMove]);
+  }, [selectedUnitInstanceId, allUnitsOnMap, updateUnitOnMap, initiateMove]);
 
 
   const handleHexClickInGame = useCallback((q: number, r: number, logicalX: number, logicalY: number, unitOnHex?: PlacedUnit, event?: React.MouseEvent) => {
-    const currentAllUnits = useGameSettingsStore.getState().allUnitsOnMap; // 最新のユニット情報を取得
-
     if (event?.button === 2) { // 右クリック
       event.preventDefault();
       if (selectedUnitInstanceId) {
-        const selectedUnit = currentAllUnits.find(u => u.instanceId === selectedUnitInstanceId);
+        const selectedUnit = allUnitsOnMap.find(u => u.instanceId === selectedUnitInstanceId);
         if (selectedUnit) {
+          // 右クリックした先にユニットがいても、移動指示を優先 (ターゲットクリア)
+          updateUnitOnMap(selectedUnit.instanceId, {attackTargetInstanceId: null});
           initiateMove(selectedUnit, logicalX, logicalY);
         }
       }
-      setAttackTargetInstanceId(null);
+      setAttackTargetInstanceId(null); // UI表示用もクリア
       return;
     }
 
     // 左クリック
     if (event?.ctrlKey && unitOnHex && selectedUnitInstanceId) {
-      const attacker = currentAllUnits.find(u => u.instanceId === selectedUnitInstanceId);
-      if (attacker && attacker.instanceId !== unitOnHex.instanceId) {
+      const attacker = allUnitsOnMap.find(u => u.instanceId === selectedUnitInstanceId);
+      if (attacker && attacker.instanceId !== unitOnHex.instanceId) { // 自分自身は攻撃しない
         handleAttackCommand(unitOnHex);
       }
     } else if (unitOnHex) {
       setSelectedUnitInstanceId(unitOnHex.instanceId);
       setDetailedSelectedUnitInfo(unitOnHex);
-      setAttackTargetInstanceId(null);
+      setAttackTargetInstanceId(null); // 通常選択で攻撃目標クリア
+      // setTargetMovePosition(null); // ユニット選択時に移動目標をクリアするかは設計次第
     } else {
       setSelectedUnitInstanceId(null);
       setDetailedSelectedUnitInfo(null);
       setAttackTargetInstanceId(null);
+      // setTargetMovePosition(null);
     }
-  }, [selectedUnitInstanceId, initiateMove, handleAttackCommand]);
+  }, [selectedUnitInstanceId, allUnitsOnMap, initiateMove, handleAttackCommand, updateUnitOnMap]);
 
   const handlePause = () => { alert("Game Paused (Pause Menu to be implemented)"); };
   const handleSurrender = () => {
     alert("Surrendered (Results screen to be implemented)");
     router.push(`/results?status=surrender&mapId=${mapIdParam}`);
   };
-
-  // selectedUnitInstanceId が変更されたときに detailedSelectedUnitInfo を更新
-  useEffect(() => {
-    if (selectedUnitInstanceId) {
-      const unit = useGameSettingsStore.getState().allUnitsOnMap.find(u => u.instanceId === selectedUnitInstanceId);
-      setDetailedSelectedUnitInfo(unit || null);
-    } else {
-      setDetailedSelectedUnitInfo(null);
-    }
-  }, [selectedUnitInstanceId]);
-
 
   return (
     <div className="flex flex-col h-screen bg-gray-900 text-white overflow-hidden">
@@ -306,28 +379,31 @@ function GameplayContent() {
           {detailedSelectedUnitInfo && UNITS_MAP.has(detailedSelectedUnitInfo.unitId) ? (
             (() => {
               const unitDef = UNITS_MAP.get(detailedSelectedUnitInfo.unitId)!;
+              const currentUnitState = allUnitsOnMap.find(u => u.instanceId === detailedSelectedUnitInfo.instanceId) || detailedSelectedUnitInfo; // ストアの最新状態を参照
               return (
                 <div className="text-sm space-y-1">
                   <p className="text-base"><span className="font-medium">{unitDef.icon} {unitDef.name}</span></p>
-                  <p>Instance ID: <span className="text-xs text-gray-400">{detailedSelectedUnitInfo.instanceId}</span></p>
-                  <p>Owner: <span className={detailedSelectedUnitInfo.owner === 'player' ? 'text-blue-300' : 'text-red-300'}>{detailedSelectedUnitInfo.owner}</span></p>
-                  <p>HP: {detailedSelectedUnitInfo.currentHp} / {unitDef.stats.hp}</p>
-                  {unitDef.stats.hp > 0 && detailedSelectedUnitInfo.currentHp !== undefined && (
+                  <p>Instance ID: <span className="text-xs text-gray-400">{currentUnitState.instanceId}</span></p>
+                  <p>Owner: <span className={currentUnitState.owner === 'player' ? 'text-blue-300' : 'text-red-300'}>{currentUnitState.owner}</span></p>
+                  <p>HP: {currentUnitState.currentHp} / {unitDef.stats.hp}</p>
+                  {unitDef.stats.hp > 0 && currentUnitState.currentHp !== undefined && (
                     <div className="w-full bg-gray-600 rounded-full h-2.5 my-1">
                       <div
                         className={`h-2.5 rounded-full ${
-                          detailedSelectedUnitInfo.currentHp / unitDef.stats.hp > 0.6 ? 'bg-green-500' :
-                          detailedSelectedUnitInfo.currentHp / unitDef.stats.hp > 0.3 ? 'bg-yellow-500' :
+                          currentUnitState.currentHp / unitDef.stats.hp > 0.6 ? 'bg-green-500' :
+                          currentUnitState.currentHp / unitDef.stats.hp > 0.3 ? 'bg-yellow-500' :
                           'bg-red-500'
                         }`}
-                        style={{ width: `${Math.max(0, (detailedSelectedUnitInfo.currentHp / unitDef.stats.hp) * 100)}%` }}
+                        style={{ width: `${Math.max(0, (currentUnitState.currentHp / unitDef.stats.hp) * 100)}%` }}
                       ></div>
                     </div>
                   )}
-                  <p>Position: ({detailedSelectedUnitInfo.position.x.toFixed(1)}, {detailedSelectedUnitInfo.position.y.toFixed(1)}) Orient: {detailedSelectedUnitInfo.orientation}</p>
-                  {detailedSelectedUnitInfo.isTurning && detailedSelectedUnitInfo.targetOrientation !== undefined && <p className="text-yellow-400">Status: Turning (to {detailedSelectedUnitInfo.targetOrientation})</p>}
-                  {detailedSelectedUnitInfo.isMoving && detailedSelectedUnitInfo.moveTargetPosition && <p className="text-green-400">Status: Moving (to {detailedSelectedUnitInfo.moveTargetPosition.x.toFixed(1)},{detailedSelectedUnitInfo.moveTargetPosition.y.toFixed(1)})</p>}
-                  {attackTargetInstanceId && <p className="text-red-400">Attacking: {useGameSettingsStore.getState().allUnitsOnMap.find(u=>u.instanceId === attackTargetInstanceId)?.name}</p>}
+                  <p>Pos: ({currentUnitState.position.x.toFixed(1)}, {currentUnitState.position.y.toFixed(1)}) Orient: {currentUnitState.orientation.toFixed(0)}°</p>
+                  <p>Status: <span className="font-semibold">{currentUnitState.status}</span></p>
+                  {currentUnitState.isTurning && currentUnitState.targetOrientation !== undefined && <p className="text-yellow-400">Turning to {currentUnitState.targetOrientation.toFixed(0)}°</p>}
+                  {currentUnitState.isMoving && currentUnitState.moveTargetPosition && <p className="text-green-400">Moving to ({currentUnitState.moveTargetPosition.x}, {currentUnitState.moveTargetPosition.y})</p>}
+                  {currentUnitState.attackTargetInstanceId && <p className="text-red-400">Targeting: {allUnitsOnMap.find(u=>u.instanceId === currentUnitState.attackTargetInstanceId)?.name}</p>}
+
 
                   <p className="mt-2 font-semibold">Stats:</p>
                   <p>Armor: F:{unitDef.stats.armor.front} S:{unitDef.stats.armor.side} B:{unitDef.stats.armor.back} T:{unitDef.stats.armor.top}</p>
@@ -354,7 +430,7 @@ function GameplayContent() {
           <GameplayHexGrid
             mapData={currentMapData}
             hexSize={26}
-            placedUnits={allUnitsOnMap} // ストアから取得した allUnitsOnMap を渡す
+            placedUnits={allUnitsOnMap}
             onHexClick={handleHexClickInGame}
             selectedUnitInstanceId={selectedUnitInstanceId}
           />

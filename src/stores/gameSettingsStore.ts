@@ -17,20 +17,37 @@ export interface InitialDeployedUnitConfig {
   position: { x: number; y: number }; // 論理座標
 }
 
+// ゲームプレイ中のユニットの状態を表す型
+export type UnitStatus =
+  | 'idle'
+  | 'moving'
+  | 'turning'
+  | 'aiming' // ターゲットに照準中 (射程内だが攻撃間隔待ち or 初回照準)
+  | 'attacking_he'
+  | 'attacking_ap'
+  | 'reloading_he' // HE武器のリロード中
+  | 'reloading_ap'; // AP武器のリロード中
+
 // ゲームプレイ中にマップ上に存在するユニットインスタンスの型
 export interface PlacedUnit {
-  instanceId: string;
-  unitId: string;
-  name: string;
-  cost: number;
-  position: { x: number; y: number };
+  instanceId: string; // ゲーム内でユニークなインスタンスID
+  unitId: string;     // ユニット種別ID (UnitDataのidに対応)
+  name: string;       // 表示名 (UnitDataのname)
+  cost: number;       // コスト (UnitDataのcost)
+  position: { x: number; y: number }; // 現在の論理座標
   currentHp: number;
-  owner: 'player' | 'enemy';
-  orientation: number;
-  targetOrientation?: number;
-  isTurning?: boolean;
-  isMoving?: boolean;
-  moveTargetPosition?: { x: number; y: number } | null; // ★ 各ユニットの移動目標
+  owner: 'player' | 'enemy'; // ユニットの所有者
+  orientation: number; // 現在の向き (0-359 degrees)
+  targetOrientation?: number; // 目標の向き (旋回用)
+  isTurning?: boolean;        // 旋回中フラグ
+  isMoving?: boolean;         // 移動中フラグ
+  moveTargetPosition?: { x: number; y: number } | null; // 移動の最終目標地点
+  currentPath?: { x: number; y: number }[] | null;     // 現在の移動経路 (次の経由ヘックスリスト)
+  timeToNextHex?: number | null;                      // 次のヘックスへの移動残り時間 (ms)
+  attackTargetInstanceId?: string | null; // 攻撃対象のユニットインスタンスID
+  status?: UnitStatus;                    // ユニットの現在の状態
+  lastAttackTimeHE?: number;              // HE武器の最終攻撃時刻 (タイムスタンプ)
+  lastAttackTimeAP?: number;              // AP武器の最終攻撃時刻
 }
 
 // ストアの状態の型定義
@@ -82,15 +99,21 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
       return {
         instanceId: `${depUnit.unitId}_${Date.now()}_${index}`, // よりユニークなID生成
         unitId: depUnit.unitId,
-        name: unitDef?.name || depUnit.name, // unitDefがあればそちらを優先
-        cost: unitDef?.cost || depUnit.cost, // unitDefがあればそちらを優先
+        name: unitDef?.name || depUnit.name,
+        cost: unitDef?.cost || depUnit.cost,
         position: depUnit.position,
         currentHp: unitDef?.stats.hp || 0,
-        owner: 'player', // 現状はプレイヤーのみ
-        orientation: 0,  // 初期向き (例: 0は上向き)
+        owner: 'player',
+        orientation: 0,  // 初期向き (0度は真上を想定)
         isTurning: false,
         isMoving: false,
-        moveTargetPosition: null, // ★ 初期値
+        moveTargetPosition: null,
+        currentPath: null,
+        timeToNextHex: null,
+        attackTargetInstanceId: null,
+        status: 'idle',
+        lastAttackTimeHE: undefined,
+        lastAttackTimeAP: undefined,
       };
     });
     set({ initialDeployment: placedUnits, allUnitsOnMap: [...placedUnits] });
@@ -108,7 +131,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
     })),
 }));
 
-// 定数として選択肢をエクスポートしておくと便利 (これは以前からあったもの)
+// 定数として選択肢をエクスポートしておくと便利
 export const aiDifficultiesList: { value: AiDifficulty, label: string }[] = [
   { value: 'easy', label: 'Easy' },
   { value: 'normal', label: 'Normal' },
