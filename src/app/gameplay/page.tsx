@@ -8,7 +8,7 @@ import { useGameSettingsStore, type PlacedUnit } from '@/stores/gameSettingsStor
 import type { UnitData } from '@/types/unit';
 import GameplayHexGrid from '@/components/game/GameplayHexGrid';
 import { ALL_MAPS_DATA } from '@/gameData/maps';
-import type { MapData, HexData, StrategicPoint } from '@/types/map'; // HexData, StrategicPoint をインポート
+import type { MapData, HexData } from '@/types/map';
 import { TERRAIN_MOVE_COSTS } from '@/types/map';
 import { ALL_UNITS, UNITS_MAP } from '@/gameData/units';
 import { hexDistance, logicalToAxial, axialToLogical, findPathAStar } from '@/lib/hexUtils';
@@ -59,7 +59,7 @@ function GameplayContent() {
 
   const [selectedUnitInstanceId, setSelectedUnitInstanceId] = useState<string | null>(null);
   const [detailedSelectedUnitInfo, setDetailedSelectedUnitInfo] = useState<PlacedUnit | null>(null);
-  const [attackTargetInstanceId, setAttackTargetInstanceId] = useState<string | null>(null); // UIフィードバック用
+  const [attackTargetInstanceId, setAttackTargetInstanceId] = useState<string | null>(null); // UI表示用
   const [attackingVisuals, setAttackingVisuals] = useState<{ attackerId: string, targetId: string, weaponType: 'HE' | 'AP' }[]>([]);
   const [visibleEnemyUnits, setVisibleEnemyUnits] = useState<PlacedUnit[]>([]);
   const [lastSeenEnemyUnits, setLastSeenEnemyUnits] = useState<Map<string, LastSeenUnitInfo>>(new Map());
@@ -106,8 +106,8 @@ function GameplayContent() {
         }
       }
 
-      const { victoryPoints: currentVP, gameTimeLimit: timeLimitFromStoreG, targetVictoryPoints: targetVPFromStoreG, gameOverMessage: msg } = useGameSettingsStore.getState();
-      if (!msg) { // gameOverMessage がセットされていない場合のみ判定
+      const { victoryPoints: currentVP, gameTimeLimit: timeLimitFromStoreG, targetVictoryPoints: targetVPFromStoreG, gameOverMessage: currentGameOverMsg } = useGameSettingsStore.getState();
+      if (!currentGameOverMsg) {
         if (currentVP.player >= targetVPFromStoreG) setGameOver("Player Wins! (Victory Points Reached)");
         else if (currentVP.enemy >= targetVPFromStoreG) setGameOver("Enemy Wins! (Victory Points Reached)");
         else if (currentElapsedTime >= timeLimitFromStoreG) {
@@ -145,18 +145,29 @@ function GameplayContent() {
   }, [gameOverMessage, addEnemyResourcesAction, addVictoryPointsToPlayer]);
 
 
-  const getTimeToTraverseHex = useCallback((unitDef: UnitData, targetHexQ: number, targetHexR: number, map: MapData | null): number => {
-    const baseTimePerHex = (1 / (unitDef.stats.moveSpeed || 1)) * 1000;
-    if (!map || !map.hexes) return baseTimePerHex;
-
+  const getTimeToTraverseHex = useCallback((
+    unitDef: UnitData,
+    targetHexQ: number,
+    targetHexR: number,
+    map: MapData | null
+  ): number => {
+    const baseTimePerHexMs = (1 / (unitDef.stats.moveSpeed || 1)) * 1000;
+    if (!map || !map.hexes) {
+      return baseTimePerHexMs;
+    }
     const hexKey = `${targetHexQ},${targetHexR}`;
     const hexData = map.hexes[hexKey];
-    if (!hexData) return baseTimePerHex;
-
+    if (!hexData) {
+      return baseTimePerHexMs;
+    }
     const terrainCostMultiplier = TERRAIN_MOVE_COSTS[hexData.terrain];
-    if (terrainCostMultiplier === Infinity) return Infinity;
-
-    return baseTimePerHex * terrainCostMultiplier;
+    if (terrainCostMultiplier === Infinity) {
+      return Infinity;
+    }
+    if (terrainCostMultiplier === undefined) {
+      return baseTimePerHexMs;
+    }
+    return baseTimePerHexMs * terrainCostMultiplier;
   }, []);
 
 
@@ -176,6 +187,7 @@ function GameplayContent() {
     const goalHexKey = `${targetAxial.q},${targetAxial.r}`;
     const goalHexData = currentMap.hexes[goalHexKey];
     if (!goalHexData || TERRAIN_MOVE_COSTS[goalHexData.terrain] === Infinity) {
+        console.warn(`Goal hex (${targetAxial.q},${targetAxial.r}) is impassable or out of map.`);
         updateUnitOnMap(unitToMove.instanceId, { currentPath: null, timeToNextHex: null, isMoving: false, status: 'idle', moveTargetPosition: null, attackTargetInstanceId: null });
         return;
     }
@@ -183,17 +195,19 @@ function GameplayContent() {
     const axialPath = findPathAStar(startAxial, targetAxial, currentMap, allUnits, unitToMove.instanceId);
 
     if (axialPath.length === 0 && (startAxial.q !== targetAxial.q || startAxial.r !== targetAxial.r)) {
+        console.warn(`No path found for ${unitToMove.name} from (${startAxial.q},${startAxial.r}) to (${targetAxial.q},${targetAxial.r})`);
         updateUnitOnMap(unitToMove.instanceId, { currentPath: null, timeToNextHex: null, isMoving: false, status: 'idle', moveTargetPosition: null, attackTargetInstanceId: null });
         return;
     }
 
     const logicalPath = axialPath.map(axial => axialToLogical(axial.q, axial.r));
+
     let newTargetOrientationDeg = unitToMove.orientation;
     let timeToFirstHex: number | null = null;
 
     if (logicalPath.length > 0) {
-        const firstStepLogical = logicalPath[0];
         const firstStepAxial = axialPath[0];
+        const firstStepLogical = logicalPath[0]; // axialToLogical(firstStepAxial.q, firstStepAxial.r) と同じはず
         const firstStepDx = firstStepLogical.x - unitToMove.position.x;
         const firstStepDy = firstStepLogical.y - unitToMove.position.y;
         if (Math.abs(firstStepDx) > 0.01 || Math.abs(firstStepDy) > 0.01) {
@@ -208,18 +222,20 @@ function GameplayContent() {
             const angleRad = Math.atan2(dy, dx);
             newTargetOrientationDeg = (angleRad * (180 / Math.PI) + 360) % 360;
         }
+        timeToFirstHex = null;
     }
 
     const needsToTurn = Math.abs(newTargetOrientationDeg - unitToMove.orientation) > 1 && unitDef.stats.turnSpeed !== undefined && unitDef.stats.turnSpeed > 0;
+    const canStartMoving = logicalPath.length > 0 && !needsToTurn && timeToFirstHex !== Infinity;
 
     updateUnitOnMap(unitToMove.instanceId, {
         currentPath: logicalPath.length > 0 ? logicalPath : null,
-        timeToNextHex: (logicalPath.length > 0 && !needsToTurn && timeToFirstHex !== Infinity) ? timeToFirstHex : null,
+        timeToNextHex: canStartMoving ? timeToFirstHex : null,
         moveTargetPosition: { x: targetLogicalX, y: targetLogicalY },
         targetOrientation: newTargetOrientationDeg,
         isTurning: needsToTurn,
-        isMoving: logicalPath.length > 0 && !needsToTurn && timeToFirstHex !== Infinity,
-        status: needsToTurn ? 'turning' : (logicalPath.length > 0 && timeToFirstHex !== Infinity ? 'moving' : 'idle'),
+        isMoving: canStartMoving,
+        status: needsToTurn ? 'turning' : (canStartMoving ? 'moving' : 'idle'),
         attackTargetInstanceId: null,
     });
   }, [updateUnitOnMap, getTimeToTraverseHex]);
@@ -227,12 +243,10 @@ function GameplayContent() {
 
   useEffect(() => {
     const unitProcessInterval = setInterval(() => {
-        const currentGlobalState = useGameSettingsStore.getState(); // 最新のグローバル状態を取得
-        if (currentGlobalState.gameOverMessage) { clearInterval(unitProcessInterval); return; }
+        const { gameOverMessage: currentGameOverMsg, allUnitsOnMap: currentUnitsFromStore, currentMapDataState: currentMapDataForLoop } = useGameSettingsStore.getState();
+        if (currentGameOverMsg) { clearInterval(unitProcessInterval); return; }
 
         const currentTime = Date.now();
-        const currentUnitsFromStore = currentGlobalState.allUnitsOnMap;
-        const currentMapDataForLoop = currentGlobalState.currentMapDataState;
         let playerCommandersAlive = 0;
         let enemyCommandersAlive = 0;
 
@@ -243,7 +257,6 @@ function GameplayContent() {
         enemyUnitsActual.forEach(enemyUnit => {
             let isVisible = false;
             for (const playerUnit of playerUnits) {
-                // canObserveTarget の呼び出しに currentTime を追加
                 if (canObserveTarget(playerUnit, enemyUnit, currentMapDataForLoop, currentUnitsFromStore, currentTime)) {
                     isVisible = true;
                     break;
@@ -292,12 +305,13 @@ function GameplayContent() {
                         const nextStepAxial = logicalToAxial(unit.currentPath[0].x, unit.currentPath[0].y);
                         timeToNextStep = getTimeToTraverseHex(unitDef, nextStepAxial.q, nextStepAxial.r, currentMapDataForLoop);
                     }
+                    const canMoveAfterTurn = !!unit.currentPath && unit.currentPath.length > 0 && timeToNextStep !== Infinity;
                     updateUnitOnMap(unit.instanceId, {
                         orientation: newOrientation, isTurning: false,
-                        isMoving: !!unit.currentPath && unit.currentPath.length > 0 && timeToNextStep !== Infinity,
-                        timeToNextHex: (!!unit.currentPath && unit.currentPath.length > 0 && timeToNextStep !== Infinity) ? timeToNextStep : null,
+                        isMoving: canMoveAfterTurn,
+                        timeToNextHex: canMoveAfterTurn ? timeToNextStep : null,
                         targetOrientation: undefined,
-                        status: (!!unit.currentPath && unit.currentPath.length > 0 && timeToNextStep !== Infinity) ? 'moving' : (unit.attackTargetInstanceId ? 'aiming' : 'idle'),
+                        status: canMoveAfterTurn ? 'moving' : (unit.attackTargetInstanceId ? 'aiming' : 'idle'),
                     });
                 } else {
                     newOrientation = (currentOrientation + Math.sign(diff) * turnSpeedDegPerTick + 360) % 360;
@@ -326,16 +340,17 @@ function GameplayContent() {
                             newOrientation = (angleRad * (180 / Math.PI) + 360) % 360;
                         }
                         needsToTurnAfterMove = Math.abs(newOrientation - unit.orientation) > 1 && unitDef.stats.turnSpeed !== undefined && unitDef.stats.turnSpeed > 0;
+                        const canContinueMoving = !needsToTurnAfterMove && timeToNextStep !== Infinity;
 
                         updateUnitOnMap(unit.instanceId, {
                             position: nextLogicalPosition,
                             orientation: needsToTurnAfterMove ? unit.orientation : newOrientation,
                             currentPath: remainingPath,
-                            timeToNextHex: needsToTurnAfterMove || timeToNextStep === Infinity ? null : timeToNextStep,
-                            isMoving: !needsToTurnAfterMove && timeToNextStep !== Infinity,
+                            timeToNextHex: canContinueMoving ? timeToNextStep : null,
+                            isMoving: canContinueMoving,
                             isTurning: needsToTurnAfterMove,
                             targetOrientation: needsToTurnAfterMove ? newOrientation : undefined,
-                            status: needsToTurnAfterMove ? 'turning' : (timeToNextStep !== Infinity ? 'moving' : 'idle'),
+                            status: needsToTurnAfterMove ? 'turning' : (canContinueMoving ? 'moving' : 'idle'),
                         });
                     } else {
                         updateUnitOnMap(unit.instanceId, {
@@ -441,6 +456,8 @@ function GameplayContent() {
                     setAttackingVisuals(prev => [...prev, visualEffect]);
                     setTimeout(() => setAttackingVisuals(prev => prev.filter(v => v.attackerId !== visualEffect.attackerId || v.targetId !== visualEffect.targetId)), 200);
 
+                    const attackTimestampUpdate: Partial<PlacedUnit> = { lastSuccessfulAttackTimestamp: currentTime };
+
                     if (targetDef) {
                         const damageResult = calculateDamage(
                             unitDef, weaponChoice.type, targetDef,
@@ -449,13 +466,13 @@ function GameplayContent() {
                         const newTargetHp = Math.max(0, targetUnit.currentHp - damageResult.damageDealt);
                         if (newTargetHp <= 0) {
                             updateUnitOnMap(targetUnit.instanceId, { currentHp: 0, status: 'destroyed' });
-                            updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null, lastAttackTimeAP: undefined, lastAttackTimeHE: undefined });
+                            updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null, lastAttackTimeAP: undefined, lastAttackTimeHE: undefined, ...attackTimestampUpdate });
                         } else {
                             updateUnitOnMap(targetUnit.instanceId, { currentHp: newTargetHp, justHit: true, hitTimestamp: currentTime });
-                            updateUnitOnMap(unit.instanceId, { status: weaponChoice.type === 'HE' ? 'reloading_he' : 'reloading_ap', [weaponChoice.type === 'HE' ? 'lastAttackTimeHE' : 'lastAttackTimeAP']: currentTime });
+                            updateUnitOnMap(unit.instanceId, { status: weaponChoice.type === 'HE' ? 'reloading_he' : 'reloading_ap', [weaponChoice.type === 'HE' ? 'lastAttackTimeHE' : 'lastAttackTimeAP']: currentTime, ...attackTimestampUpdate });
                         }
                     } else {
-                         updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null });
+                         updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null, ...attackTimestampUpdate });
                     }
                 } else if (unit.status === 'aiming' || unit.status === `reloading_${weaponChoice.type.toLowerCase()}`) {
                     const attackIntervalMs = weaponChoice.stats.attackInterval * 1000;
@@ -478,18 +495,20 @@ function GameplayContent() {
                         const spawnHexKey = `${trySpawnAxial.q},${trySpawnAxial.r}`;
                         const isSpawnValid = currentMapDataForLoop?.hexes[spawnHexKey] && TERRAIN_MOVE_COSTS[currentMapDataForLoop.hexes[spawnHexKey].terrain] !== Infinity;
                         const isSpawnOccupied = currentUnitsFromStore.some(u => u.position.x === trySpawnPos.x && u.position.y === trySpawnPos.y && u.status !== 'destroyed');
+
                         if (isSpawnValid && !isSpawnOccupied) {
                             spawnPos = trySpawnPos;
                         } else {
                              console.warn(`Player Commander ${unit.instanceId}: Spawn pos for ${producedUnitDef.name} invalid or occupied.`);
                         }
+
                         if (spawnPos) {
                             const newUnitInstanceId = `${producedUnitId}_player_${Date.now()}_${Math.random().toString(16).slice(2)}`;
                             const newPlacedUnit: PlacedUnit = {
                                 instanceId: newUnitInstanceId, unitId: producedUnitId, name: producedUnitDef.name, cost: producedUnitDef.cost,
                                 position: spawnPos, currentHp: producedUnitDef.stats.hp, owner: 'player', orientation: 0, status: 'idle',
                                 isTurning: false, isMoving: false, moveTargetPosition: null, currentPath: null, timeToNextHex: null,
-                                attackTargetInstanceId: null, lastAttackTimeHE: undefined, lastAttackTimeAP: undefined,
+                                attackTargetInstanceId: null, lastAttackTimeHE: undefined, lastAttackTimeAP: undefined, lastSuccessfulAttackTimestamp: undefined,
                                 justHit: false, hitTimestamp: undefined, productionQueue: null,
                             };
                             addUnitToMapAction(newPlacedUnit);
@@ -501,18 +520,22 @@ function GameplayContent() {
                 }
             }
 
-            if (unit.owner === 'enemy' && !currentGlobalState.gameOverMessage) { // gameOverMessage を参照
+            if (unit.owner === 'enemy' && !currentGameOverMsg) { // AIの行動決定はゲームオーバー前のみ
                 let aiDecision: AIAction | null = null;
                 if (unitDef.isCommander) {
-                    aiDecision = decideCommanderAIAction(unit, unitDef, currentUnitsFromStore, currentGlobalState.enemyResources, currentMapDataForLoop);
+                    aiDecision = decideCommanderAIAction(unit, unitDef, currentUnitsFromStore, enemyResourcesStore, currentMapDataForLoop);
                 } else {
                     aiDecision = decideCombatAIAction(unit, unitDef, currentUnitsFromStore, currentMapDataForLoop);
                 }
+
                 if (aiDecision) {
                     switch (aiDecision.type) {
                         case 'PRODUCE':
                             if (aiDecision.targetUnitId) {
                                 const prodResult = startUnitProductionAction(unit.instanceId, aiDecision.targetUnitId, 'enemy');
+                                if (!prodResult.success && prodResult.message !== "Commander is already producing." && prodResult.message !== "Not enough resources.") {
+                                    console.warn(`AI Prod Fail for ${unit.name} (${unit.instanceId}): ${prodResult.message} trying to build ${aiDecision.targetUnitId}`);
+                                }
                             }
                             break;
                         case 'MOVE':
@@ -562,6 +585,7 @@ function GameplayContent() {
                         const spawnHexKey = `${trySpawnAxial.q},${trySpawnAxial.r}`;
                         const isSpawnValid = currentMapDataForLoop?.hexes[spawnHexKey] && TERRAIN_MOVE_COSTS[currentMapDataForLoop.hexes[spawnHexKey].terrain] !== Infinity;
                         const isSpawnOccupied = currentUnitsFromStore.some(u => u.position.x === trySpawnPos.x && u.position.y === trySpawnPos.y && u.status !== 'destroyed');
+
                         if (isSpawnValid && !isSpawnOccupied) {
                             spawnPos = trySpawnPos;
                         } else {
@@ -573,7 +597,7 @@ function GameplayContent() {
                                 instanceId: newUnitInstanceId, unitId: producedUnitId, name: producedUnitDef.name, cost: producedUnitDef.cost,
                                 position: spawnPos, currentHp: producedUnitDef.stats.hp, owner: 'enemy', orientation: 180, status: 'idle',
                                 isTurning: false, isMoving: false, moveTargetPosition: null, currentPath: null, timeToNextHex: null,
-                                attackTargetInstanceId: null, lastAttackTimeHE: undefined, lastAttackTimeAP: undefined,
+                                attackTargetInstanceId: null, lastAttackTimeHE: undefined, lastAttackTimeAP: undefined, lastSuccessfulAttackTimestamp: undefined,
                                 justHit: false, hitTimestamp: undefined, productionQueue: null,
                             };
                             addUnitToMapAction(newPlacedUnit);
@@ -591,7 +615,7 @@ function GameplayContent() {
             setAllUnitsOnMapDirectly(currentAliveUnits);
         }
 
-        if (!currentGlobalState.gameOverMessage) { // 最新のgameOverMessageを参照
+        if (!currentGameOverMsg) {
             const anyPlayerUnitsExist = currentAliveUnits.some(u => u.owner === 'player');
             const anyEnemyUnitsExist = currentAliveUnits.some(u => u.owner === 'enemy');
             if (anyPlayerUnitsExist && playerCommandersAlive === 0) {
@@ -604,7 +628,7 @@ function GameplayContent() {
     }, gameTickRate);
     return () => clearInterval(unitProcessInterval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [updateUnitOnMap, setAllUnitsOnMapDirectly, setGameOver, updateStrategicPointState, visibleEnemyUnits, lastSeenEnemyUnits, addUnitToMapAction, clearCommanderProductionQueueAction, startUnitProductionAction, addPlayerResourcesAction, addEnemyResourcesAction, enemyResourcesStore, incrementGameTime, playerVP, enemyVP, gameTimeLimit, targetVictoryPoints, initiateMove, getTimeToTraverseHex, gameOverMessage]); // gameOverMessage を依存配列に追加
+  }, [/*gameOverMessage, (gameplay/page.tsxから削除されていたため、影響のありそうなものをコメントアウト)*/ updateUnitOnMap, setAllUnitsOnMapDirectly, setGameOver, updateStrategicPointState, visibleEnemyUnits, lastSeenEnemyUnits, addUnitToMapAction, clearCommanderProductionQueueAction, startUnitProductionAction, addPlayerResourcesAction, addEnemyResourcesAction, enemyResourcesStore, incrementGameTime, playerVP, enemyVP, gameTimeLimit, targetVictoryPoints, initiateMove, getTimeToTraverseHex]);
 
 
   const handleAttackCommand = useCallback((targetUnit: PlacedUnit) => {
@@ -619,13 +643,17 @@ function GameplayContent() {
         const distance = hexDistance(attackerPosAxial.q, attackerPosAxial.r, targetPosAxial.q, targetPosAxial.r);
 
         let weaponToUseRange: number | undefined;
-        const targetUnitDef = UNITS_MAP.get(targetUnit.unitId);
-        const targetHasArmor = targetUnitDef ? (targetUnitDef.stats.armor.front > 0 || targetUnitDef.stats.armor.side > 0 || targetUnitDef.stats.armor.back > 0 || targetUnitDef.stats.armor.top > 0) : false;
+        const targetDef = UNITS_MAP.get(targetUnit.unitId); // ターゲットの定義を取得
+        const targetHasArmor = targetDef ? (targetDef.stats.armor.front > 0 || targetDef.stats.armor.side > 0 || targetDef.stats.armor.back > 0 || targetDef.stats.armor.top > 0) : false;
 
 
-        if (attackerDef.stats.apWeapon && targetHasArmor) weaponToUseRange = attackerDef.stats.apWeapon.range;
-        else if (attackerDef.stats.heWeapon) weaponToUseRange = attackerDef.stats.heWeapon.range;
-        else if (attackerDef.stats.apWeapon) weaponToUseRange = attackerDef.stats.apWeapon.range;
+        if (attackerDef.stats.apWeapon && targetHasArmor && distance <= attackerDef.stats.apWeapon.range) {
+             weaponToUseRange = attackerDef.stats.apWeapon.range;
+        } else if (attackerDef.stats.heWeapon && distance <= attackerDef.stats.heWeapon.range) {
+             weaponToUseRange = attackerDef.stats.heWeapon.range;
+        } else if (attackerDef.stats.apWeapon && distance <= attackerDef.stats.apWeapon.range) { // APしかなくても or HEが射程外なら
+             weaponToUseRange = attackerDef.stats.apWeapon.range;
+        }
 
 
         const dx = targetUnit.position.x - attacker.position.x;
@@ -678,7 +706,8 @@ function GameplayContent() {
 
   const handlePause = () => { alert("Game Paused (Pause Menu to be implemented)"); };
   const handleSurrender = () => {
-    if (!gameOverMessage) setGameOver("Player Surrendered");
+    const currentGameOverMsg = useGameSettingsStore.getState().gameOverMessage;
+    if (!currentGameOverMsg) setGameOver("Player Surrendered");
   };
 
   useEffect(() => {
@@ -686,19 +715,20 @@ function GameplayContent() {
         const unit = useGameSettingsStore.getState().allUnitsOnMap.find(u => u.instanceId === selectedUnitInstanceId);
         setDetailedSelectedUnitInfo(unit || null);
     } else { setDetailedSelectedUnitInfo(null); }
-  }, [selectedUnitInstanceId, allUnitsOnMapFromStore]); // allUnitsOnMapFromStore はストアの配列そのものなので、変更時に再実行される
+  }, [selectedUnitInstanceId, allUnitsOnMapFromStore]);
 
   useEffect(() => {
-    if (gameOverMessage) {
-        console.log("Game Over:", gameOverMessage);
+    const currentGameOverMsg = useGameSettingsStore.getState().gameOverMessage; // useEffect内でのみ取得
+    if (currentGameOverMsg) {
+        console.log("Game Over:", currentGameOverMsg);
         setTimeout(() => {
             let status = "draw";
-            if (gameOverMessage.includes("Player Wins")) status = "win";
-            else if (gameOverMessage.includes("Enemy Wins") || gameOverMessage.includes("Surrendered")) status = "lose";
-            router.push(`/results?status=${status}&mapId=${mapIdParam || selectedMapIdFromStore || 'unknown'}&reason=${encodeURIComponent(gameOverMessage)}`);
+            if (currentGameOverMsg.includes("Player Wins")) status = "win";
+            else if (currentGameOverMsg.includes("Enemy Wins") || currentGameOverMsg.includes("Surrendered")) status = "lose";
+            router.push(`/results?status=${status}&mapId=${mapIdParam || selectedMapIdFromStore || 'unknown'}&reason=${encodeURIComponent(currentGameOverMsg)}`);
         }, 3000);
     }
-  }, [gameOverMessage, router, mapIdParam, selectedMapIdFromStore]);
+  }, [gameOverMessage, router, mapIdParam, selectedMapIdFromStore]); // gameOverMessage を依存配列に追加
 
   const unitsToDisplayOnGrid = [
       ...allUnitsOnMapFromStore.filter(u => u.owner === 'player' && u.status !== 'destroyed'),
@@ -844,7 +874,7 @@ function GameplayContent() {
             selectedUnitInstanceId={selectedUnitInstanceId}
             attackingPairs={attackingVisuals}
             visibleEnemyInstanceIds={new Set(visibleEnemyUnits.map(u => u.instanceId))}
-            strategicPoints={currentMapDataFromStore?.strategicPoints || []}
+            strategicPoints={currentMapDataFromStore?.strategicPoints || []} // ★★★ この行のコメントアウトを解除 ★★★
           />
           <div className="absolute bottom-4 right-4 w-56 h-44 bg-green-900 bg-opacity-70 border-2 border-gray-600 rounded shadow-xl p-1 text-xs">
             <p className="text-center text-green-300">Mini-map Placeholder</p>
