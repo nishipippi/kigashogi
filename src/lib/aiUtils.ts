@@ -51,10 +51,27 @@ function findNearestEnemy(aiUnit: PlacedUnit, allUnits: PlacedUnit[], mapData: M
 
       const enemyHasArmor = enemyDef.stats.armor.front > 0 || enemyDef.stats.armor.side > 0 || enemyDef.stats.armor.back > 0 || enemyDef.stats.armor.top > 0;
       let canEngage = false;
-      if (aiUnitDef.stats.apWeapon && enemyHasArmor && distance <= aiUnitDef.stats.apWeapon.range) canEngage = true;
-      if (!canEngage && aiUnitDef.stats.heWeapon && distance <= aiUnitDef.stats.heWeapon.range) canEngage = true;
-      // If out of direct engagement range but could move towards, still consider it.
-      if (!canEngage && (aiUnitDef.stats.apWeapon || aiUnitDef.stats.heWeapon)) canEngage = true; // Looser check for "potential" target
+      if (enemyHasArmor) {
+        // 装甲を持つターゲットにはAP武器のみ考慮
+        if (aiUnitDef.stats.apWeapon && distance <= aiUnitDef.stats.apWeapon.range) {
+          canEngage = true;
+        }
+      } else {
+        // 装甲を持たないターゲットにはHE武器のみ考慮
+        if (aiUnitDef.stats.heWeapon && distance <= aiUnitDef.stats.heWeapon.range) {
+          canEngage = true;
+        }
+      }
+      // ターゲットが射程外でも、移動して攻撃できる可能性がある場合は考慮する
+      // ただし、HEのみのユニットが装甲ターゲットを追うのを防ぐため、
+      // 適切な武器が全くない場合はcanEngageをfalseのままにする
+      if (!canEngage && (
+          (enemyHasArmor && aiUnitDef.stats.apWeapon) ||
+          (!enemyHasArmor && aiUnitDef.stats.heWeapon)
+      )) {
+          // 適切な武器がある場合のみ、移動して攻撃する可能性を考慮
+          canEngage = true;
+      }
 
 
       if (canEngage && distance < minDistance) {
@@ -167,37 +184,52 @@ export function decideCombatAIAction(
   if (nearestEnemy) {
     const distance = hexDistance(
       logicalToAxial(aiUnit.position.x, aiUnit.position.y).q, logicalToAxial(aiUnit.position.x, aiUnit.position.y).r,
-      logicalToAxial(nearestEnemy.position.x, nearestEnemy.position.y).q, logicalToAxial(nearestEnemy.position.y, nearestEnemy.position.y).r
+      logicalToAxial(nearestEnemy.position.x, nearestEnemy.position.y).q, logicalToAxial(nearestEnemy.position.x, nearestEnemy.position.y).r
     );
 
-    let canEngageNow = false;
     const enemyDef = UNITS_MAP.get(nearestEnemy.unitId);
-    if (enemyDef) {
-      const enemyHasArmor = enemyDef.stats.armor.front > 0 || enemyDef.stats.armor.side > 0 || enemyDef.stats.armor.back > 0 || enemyDef.stats.armor.top > 0;
-      if (aiUnitDef.stats.apWeapon && enemyHasArmor && distance <= aiUnitDef.stats.apWeapon.range) {
-        canEngageNow = true;
-      }
-      if (!canEngageNow && aiUnitDef.stats.heWeapon && distance <= aiUnitDef.stats.heWeapon.range) {
-        canEngageNow = true;
-      }
-      // If still not engageable now, but has AP weapon and target is not armored (bad use of AP but AI might do it)
-      if (!canEngageNow && aiUnitDef.stats.apWeapon && distance <= aiUnitDef.stats.apWeapon.range) {
-        canEngageNow = true;
+    if (!enemyDef) {
+      // 敵の定義が見つからない場合は何もしない
+      return null;
+    }
+
+    const enemyHasArmor = enemyDef.stats.armor.front > 0 || enemyDef.stats.armor.side > 0 || enemyDef.stats.armor.back > 0 || enemyDef.stats.armor.top > 0;
+    const hasLoS = mapData && hasLineOfSight(aiUnit, nearestEnemy, mapData, allUnitsOnMap);
+
+    // 1. AP射程内の敵を探す
+    if (aiUnitDef.stats.apWeapon && distance <= aiUnitDef.stats.apWeapon.range && hasLoS) {
+      if (enemyHasArmor) {
+        // 敵が装甲を持つ場合、AP武器で攻撃
+        if (aiUnit.status !== 'attacking_ap' && aiUnit.status !== 'attacking_he') {
+          return { type: 'ATTACK', attackTargetInstanceId: nearestEnemy.instanceId, priority: 100 };
+        }
+      } else {
+        // 敵が装甲を持たない場合、AP武器では攻撃せず、HE武器のチェックに進む
+        // または、このユニットがAP武器しか持たない場合は、攻撃せず元の行動を続ける
       }
     }
 
-    if (canEngageNow && mapData && hasLineOfSight(aiUnit, nearestEnemy, mapData, allUnitsOnMap)) {
-      // If an immediate attack is possible, prioritize it over current movement/reloading
-      if (aiUnit.status !== 'attacking_ap' && aiUnit.status !== 'attacking_he') { // Don't interrupt if already attacking
-        return { type: 'ATTACK', attackTargetInstanceId: nearestEnemy.instanceId, priority: 100 };
+    // 2. AP射程内に敵がいない、またはAP武器で攻撃しないと判断された場合、HE射程内の敵を探す
+    if (aiUnitDef.stats.heWeapon && distance <= aiUnitDef.stats.heWeapon.range && hasLoS) {
+      if (!enemyHasArmor) {
+        // 敵が装甲を持たない場合、HE武器で攻撃
+        if (aiUnit.status !== 'attacking_ap' && aiUnit.status !== 'attacking_he') {
+          return { type: 'ATTACK', attackTargetInstanceId: nearestEnemy.instanceId, priority: 95 }; // APより少し優先度を下げる
+        }
+      } else {
+        // 敵が装甲を持つ場合、HE武器では攻撃せず、元の行動を続ける
       }
+    }
+
+    // 攻撃可能な敵がいるが、射程外またはLoSがない場合、移動を試みる
+    if (nearestEnemy.status !== 'destroyed' && (distance > (aiUnitDef.stats.apWeapon?.range || 0) && distance > (aiUnitDef.stats.heWeapon?.range || 0) || !hasLoS)) {
+      return { type: 'MOVE', targetPosition: { x: nearestEnemy.position.x, y: nearestEnemy.position.y }, priority: 70 };
     }
   }
 
   // If no immediate attack, or already attacking, then check other statuses
+  // このブロックは、上記の攻撃ロジックの後に移動
   if (aiUnit.status === 'moving' || aiUnit.status === 'turning' || aiUnit.status?.startsWith('reloading_') || aiUnit.status?.startsWith('attacking_')) {
-    // If already busy with a primary action, let it continue for a bit
-    // Exception: if current attack target is destroyed, or move target reached and no new order.
     if (aiUnit.attackTargetInstanceId) {
       const currentTarget = allUnitsOnMap.find(u => u.instanceId === aiUnit.attackTargetInstanceId);
       if (!currentTarget || currentTarget.status === 'destroyed') {
@@ -207,40 +239,6 @@ export function decideCombatAIAction(
       }
     } else if (aiUnit.status === 'moving' || aiUnit.status === 'turning') {
       return null; // Continue moving/turning if no immediate attack opportunity found
-    }
-  }
-
-
-  // 1. Attack nearby enemies (re-evaluate after potential status check)
-  // This block is now for units that are idle or whose previous action was interrupted/completed
-  if (nearestEnemy) { // nearestEnemy is already found above
-    const distance = hexDistance(
-      logicalToAxial(aiUnit.position.x, aiUnit.position.y).q, logicalToAxial(aiUnit.position.x, aiUnit.position.y).r,
-      logicalToAxial(nearestEnemy.position.x, nearestEnemy.position.y).q, logicalToAxial(nearestEnemy.position.y, nearestEnemy.position.y).r
-    );
-
-    let canEngageNow = false;
-    const enemyDef = UNITS_MAP.get(nearestEnemy.unitId);
-    if (enemyDef) {
-        const enemyHasArmor = enemyDef.stats.armor.front > 0 || enemyDef.stats.armor.side > 0 || enemyDef.stats.armor.back > 0 || enemyDef.stats.armor.top > 0;
-        if (aiUnitDef.stats.apWeapon && enemyHasArmor && distance <= aiUnitDef.stats.apWeapon.range) {
-            canEngageNow = true;
-        }
-        if (!canEngageNow && aiUnitDef.stats.heWeapon && distance <= aiUnitDef.stats.heWeapon.range) {
-            canEngageNow = true;
-        }
-         // If still not engageable now, but has AP weapon and target is not armored (bad use of AP but AI might do it)
-        if (!canEngageNow && aiUnitDef.stats.apWeapon && distance <= aiUnitDef.stats.apWeapon.range) {
-            canEngageNow = true;
-        }
-    }
-
-
-    if (canEngageNow && mapData && hasLineOfSight(aiUnit, nearestEnemy, mapData, allUnitsOnMap)) {
-      return { type: 'ATTACK', attackTargetInstanceId: nearestEnemy.instanceId, priority: 100 };
-    } else if (nearestEnemy.status !== 'destroyed') {
-      // Cannot attack now (out of range or no LoS), so move towards it.
-      return { type: 'MOVE', targetPosition: { x: nearestEnemy.position.x, y: nearestEnemy.position.y }, priority: 70 };
     }
   }
 

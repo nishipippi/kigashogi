@@ -553,14 +553,17 @@ function GameplayContent() {
 
                             if (targetDef) {
                                 const targetHasArmor = targetDef.stats.armor.front > 0 || targetDef.stats.armor.side > 0 || targetDef.stats.armor.back > 0 || targetDef.stats.armor.top > 0;
-                                if (unitDef.stats.apWeapon && distance <= unitDef.stats.apWeapon.range && targetHasArmor) {
-                                    weaponChoice = { type: 'AP', stats: unitDef.stats.apWeapon };
-                                } else if (unitDef.stats.heWeapon && distance <= unitDef.stats.heWeapon.range && !targetHasArmor) { 
-                                    weaponChoice = { type: 'HE', stats: unitDef.stats.heWeapon };
-                                } else if (unitDef.stats.heWeapon && distance <= unitDef.stats.heWeapon.range) { 
-                                    weaponChoice = { type: 'HE', stats: unitDef.stats.heWeapon };
-                                } else if (unitDef.stats.apWeapon && distance <= unitDef.stats.apWeapon.range) { 
-                                    weaponChoice = { type: 'AP', stats: unitDef.stats.apWeapon };
+
+                                if (targetHasArmor) {
+                                    // 装甲を持つターゲットにはAP武器のみ考慮
+                                    if (unitDef.stats.apWeapon && distance <= unitDef.stats.apWeapon.range) {
+                                        weaponChoice = { type: 'AP', stats: unitDef.stats.apWeapon };
+                                    }
+                                } else {
+                                    // 装甲を持たないターゲットにはHE武器のみ考慮
+                                    if (unitDef.stats.heWeapon && distance <= unitDef.stats.heWeapon.range) {
+                                        weaponChoice = { type: 'HE', stats: unitDef.stats.heWeapon };
+                                    }
                                 }
                             }
 
@@ -799,14 +802,16 @@ function GameplayContent() {
         const targetDef = UNITS_MAP.get(targetUnit.unitId);
         const targetHasArmor = targetDef ? (targetDef.stats.armor.front > 0 || targetDef.stats.armor.side > 0 || targetDef.stats.armor.back > 0 || targetDef.stats.armor.top > 0) : false;
 
-        if (attackerDef.stats.apWeapon && targetHasArmor && distance <= attackerDef.stats.apWeapon.range) {
-            weaponToUseRange = attackerDef.stats.apWeapon.range;
-        } else if (attackerDef.stats.heWeapon && distance <= attackerDef.stats.heWeapon.range && !targetHasArmor ) {
-            weaponToUseRange = attackerDef.stats.heWeapon.range;
-        } else if (attackerDef.stats.heWeapon && distance <= attackerDef.stats.heWeapon.range ) { 
-             weaponToUseRange = attackerDef.stats.heWeapon.range;
-        } else if (attackerDef.stats.apWeapon && distance <= attackerDef.stats.apWeapon.range) { 
-            weaponToUseRange = attackerDef.stats.apWeapon.range;
+        if (targetHasArmor) {
+            // 装甲を持つターゲットにはAP武器のみ考慮
+            if (attackerDef.stats.apWeapon && distance <= attackerDef.stats.apWeapon.range) {
+                weaponToUseRange = attackerDef.stats.apWeapon.range;
+            }
+        } else {
+            // 装甲を持たないターゲットにはHE武器のみ考慮
+            if (attackerDef.stats.heWeapon && distance <= attackerDef.stats.heWeapon.range) {
+                weaponToUseRange = attackerDef.stats.heWeapon.range;
+            }
         }
         
         const dx = targetUnit.position.x - attackerUnit.position.x;
@@ -1033,8 +1038,8 @@ function GameplayContent() {
           {detailedSelectedUnitInfo && UNITS_MAP.get(detailedSelectedUnitInfo.unitId)?.isCommander && detailedSelectedUnitInfo.owner === 'player' && (
             <>
               <h2 className="text-lg font-semibold border-b border-gray-700 pb-2 pt-4">Unit Production</h2>
-              {detailedSelectedUnitInfo.productionQueue ? (
-                <div className="text-sm p-2 bg-gray-700 rounded">
+              {detailedSelectedUnitInfo.productionQueue && (
+                <div className="text-sm p-2 bg-gray-700 rounded mb-4"> {/* Added mb-4 for spacing */}
                   <p>Producing: {UNITS_MAP.get(detailedSelectedUnitInfo.productionQueue.unitIdToProduce)?.name}</p>
                   <p>Time Left: {(detailedSelectedUnitInfo.productionQueue.timeLeftMs / 1000).toFixed(1)}s</p>
                   <div className="w-full bg-gray-600 rounded-full h-2.5 my-1">
@@ -1044,27 +1049,26 @@ function GameplayContent() {
                     ></div>
                   </div>
                 </div>
-              ) : (
-                <div className="space-y-2 text-sm">
-                  {ALL_UNITS.filter(u => !u.isCommander && u.id !== 'special_forces').map(unitToProduce => (
-                    <div key={unitToProduce.id} className="p-2 bg-gray-700 hover:bg-gray-600 rounded flex justify-between items-center">
-                      <div>
-                        <span>{unitToProduce.icon} {unitToProduce.name}</span>
-                        <span className="ml-2 text-xs text-yellow-400">({unitToProduce.cost}C)</span>
-                        <span className="ml-2 text-xs text-gray-400">[{unitToProduce.productionTime}s]</span>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => detailedSelectedUnitInfo && handleStartProductionRequest(detailedSelectedUnitInfo.instanceId, unitToProduce.id)}
-                        disabled={playerResources < unitToProduce.cost || !!detailedSelectedUnitInfo.productionQueue || !!gameOverMessage}
-                      >
-                        Build
-                      </Button>
-                    </div>
-                  ))}
-                </div>
               )}
+              <div className="space-y-2 text-sm">
+                {ALL_UNITS.filter(u => !u.isCommander && u.id !== 'special_forces').map(unitToProduce => (
+                  <div key={unitToProduce.id} className="p-2 bg-gray-700 hover:bg-gray-600 rounded flex justify-between items-center">
+                    <div>
+                      <span>{unitToProduce.icon} {unitToProduce.name}</span>
+                      <span className="ml-2 text-xs text-yellow-400">({unitToProduce.cost}C)</span>
+                      <span className="ml-2 text-xs text-gray-400">[{unitToProduce.productionTime}s]</span>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => detailedSelectedUnitInfo && handleStartProductionRequest(detailedSelectedUnitInfo.instanceId, unitToProduce.id)}
+                      disabled={playerResources < unitToProduce.cost || !!detailedSelectedUnitInfo.productionQueue || !!gameOverMessage}
+                    >
+                      Build
+                    </Button>
+                  </div>
+                ))}
+              </div>
             </>
           )}
         </aside>

@@ -207,10 +207,6 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
             {strategicPoints.map(sp => {
               const spAxial = logicalToAxial(sp.x, sp.y);
               const center = hexToPixel(spAxial.q, spAxial.r, hexSize);
-              const hexKey = `${spAxial.q},${spAxial.r}`;
-              const isVisible = playerVisibilityMap[hexKey]; // 戦略拠点も視界内にあるかチェック
-
-              if (!isVisible) return null; // 視界外の戦略拠点は描画しない
 
               let spColor = "grey";
               if (sp.owner === 'player') spColor = "blue";
