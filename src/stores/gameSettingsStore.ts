@@ -83,6 +83,7 @@ interface GameSettingsState {
   enemyResources: number;
   playerVisibilityMap: Record<string, boolean>; // キーは "q,r" 形式の文字列
   lastKnownEnemyPositions: Record<string, { x: number; y: number; timestamp: number }>; // キーはユニットの instanceId
+  selectedHexInfo: { q: number; r: number; logicalX: number; logicalY: number; terrain: TerrainType } | null;
 
   setAiDifficulty: (difficulty: AiDifficulty) => void;
   setPlayerFaction: (faction: Faction) => void;
@@ -109,6 +110,7 @@ interface GameSettingsState {
   updatePlayerVisibilityMap: (visibilityMap: Record<string, boolean>) => void;
   updateLastKnownEnemyPosition: (instanceId: string, position: { x: number; y: number }, timestamp: number) => void;
   clearVisibilityData: () => void;
+  setSelectedHexInfo: (hexInfo: { q: number; r: number; logicalX: number; logicalY: number; terrain: TerrainType } | null) => void;
 }
 
 export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
@@ -129,6 +131,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
   enemyResources: 500,
   playerVisibilityMap: {},
   lastKnownEnemyPositions: {},
+  selectedHexInfo: null,
 
   updatePlayerVisibilityMap: (visibilityMap) => set({ playerVisibilityMap: visibilityMap }),
   updateLastKnownEnemyPosition: (instanceId, position, timestamp) =>
@@ -139,6 +142,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
       },
     })),
   clearVisibilityData: () => set({ playerVisibilityMap: {}, lastKnownEnemyPositions: {} }),
+  setSelectedHexInfo: (hexInfo) => set({ selectedHexInfo: hexInfo }),
 
   setAiDifficulty: (difficulty) => set({ aiDifficulty: difficulty }),
   setPlayerFaction: (faction) => set({ playerFaction: faction }),

@@ -4,7 +4,7 @@
 "use client";
 
 import React from 'react';
-import type { MapData, StrategicPoint, HexData } from '@/types/map';
+import type { MapData, StrategicPoint, HexData, TerrainType } from '@/types/map';
 import { useGameSettingsStore, type PlacedUnit } from '@/stores/gameSettingsStore'; // ストアをインポート
 import { getHexCorners, hexToPixel, logicalToAxial, axialToLogical, getHexWidth, getHexHeight } from '@/lib/hexUtils';
 import { UNITS_MAP } from '@/gameData/units';
@@ -20,7 +20,7 @@ interface GameplayHexGridProps {
   mapData: MapData | null;
   hexSize?: number;
   placedUnits: PlacedUnit[]; // LastSeenUnitInfo はストアで管理するため、ここでは PlacedUnit のみ
-  onHexClick?: (q: number, r: number, logicalX: number, logicalY: number, unitOnHex?: PlacedUnit, event?: React.MouseEvent<SVGGElement>) => void;
+  onHexClick?: (q: number, r: number, logicalX: number, logicalY: number, terrain: TerrainType, unitOnHex?: PlacedUnit, event?: React.MouseEvent<SVGGElement>) => void;
   selectedUnitInstanceId?: string | null;
   attackingPairs?: { visualId: string, attackerId: string, targetId: string, weaponType: 'HE' | 'AP' }[];
   // visibleEnemyInstanceIds はストアから取得するため不要
@@ -45,7 +45,7 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
 
   const { rows: logicalRows, cols: logicalCols, hexes: mapHexesData } = mapData;
   let minPxX = Infinity, maxPxX = -Infinity, minPxY = Infinity, maxPxY = -Infinity;
-  const hexesToDraw: { q: number; r: number; logicalX: number; logicalY: number; center: { x: number; y: number }; corners: string, terrain: string }[] = [];
+  const hexesToDraw: { q: number; r: number; logicalX: number; logicalY: number; center: { x: number; y: number }; corners: string, terrain: TerrainType }[] = [];
 
   if (mapHexesData) {
     for (const key in mapHexesData) {
@@ -141,8 +141,8 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
               return (
                 <g
                   key={hexKey}
-                  onClick={(event) => onHexClick?.(q, r, logicalX, logicalY, unitOnHex, event)}
-                  onContextMenu={(event) => onHexClick?.(q, r, logicalX, logicalY, unitOnHex, event)}
+                  onClick={(event) => onHexClick?.(q, r, logicalX, logicalY, terrain, unitOnHex, event)}
+                  onContextMenu={(event) => onHexClick?.(q, r, logicalX, logicalY, terrain, unitOnHex, event)}
                   className="cursor-pointer group"
                 >
                   <polygon

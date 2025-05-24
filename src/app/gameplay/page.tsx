@@ -8,7 +8,7 @@ import { useGameSettingsStore, type PlacedUnit } from '@/stores/gameSettingsStor
 import type { UnitData } from '@/types/unit';
 import GameplayHexGrid from '@/components/game/GameplayHexGrid';
 import { ALL_MAPS_DATA } from '@/gameData/maps';
-import type { MapData, HexData } from '@/types/map';
+import type { MapData, HexData, TerrainType } from '@/types/map';
 import { TERRAIN_MOVE_COSTS } from '@/types/map';
 import { ALL_UNITS, UNITS_MAP } from '@/gameData/units';
 import { hexDistance, logicalToAxial, axialToLogical, findPathAStar } from '@/lib/hexUtils';
@@ -36,6 +36,7 @@ function GameplayContent() {
   const currentMapDataFromStore = useGameSettingsStore(state => state.currentMapDataState);
   const playerVisibilityMap = useGameSettingsStore(state => state.playerVisibilityMap); // ストアから取得
   const lastKnownEnemyPositions = useGameSettingsStore(state => state.lastKnownEnemyPositions); // ストアから取得
+  const selectedHexInfo = useGameSettingsStore(state => state.selectedHexInfo); // ストアから取得
 
   const {
     updateUnitOnMap,
@@ -53,6 +54,7 @@ function GameplayContent() {
     updatePlayerVisibilityMap, // ストアのアクションをインポート
     updateLastKnownEnemyPosition, // ストアのアクションをインポート
     clearVisibilityData, // ストアのアクションをインポート
+    setSelectedHexInfo, // ストアのアクションをインポート
   } = useGameSettingsStore();
 
 
@@ -846,9 +848,11 @@ function GameplayContent() {
     }
   }, [updateUnitOnMap, initiateMove]);
 
-  const handleHexClickInGame = useCallback((q: number, r: number, logicalX: number, logicalY: number, unitOnHex?: PlacedUnit, event?: React.MouseEvent) => {
+  const handleHexClickInGame = useCallback((q: number, r: number, logicalX: number, logicalY: number, terrain: TerrainType, unitOnHex?: PlacedUnit, event?: React.MouseEvent) => {
     const currentUnits = useGameSettingsStore.getState().allUnitsOnMap;
     const selectedUnit = selectedUnitInstanceId ? currentUnits.find(u => u.instanceId === selectedUnitInstanceId) : null;
+
+    setSelectedHexInfo({ q, r, logicalX, logicalY, terrain }); // クリックされたヘックス情報をストアに保存
 
     if (event?.button === 2) { // Right click
       event.preventDefault();
@@ -1070,6 +1074,26 @@ function GameplayContent() {
                 ))}
               </div>
             </>
+          )}
+
+          <h2 className="text-lg font-semibold border-b border-gray-700 pb-2 pt-4">Hex Information</h2>
+          {selectedHexInfo ? (
+            <div className="text-sm space-y-1">
+              <p>Q: {selectedHexInfo.q}, R: {selectedHexInfo.r}</p>
+              <p>Logical X: {selectedHexInfo.logicalX}, Y: {selectedHexInfo.logicalY}</p>
+              <p>Terrain: <span className="capitalize">{selectedHexInfo.terrain.replace(/_/g, ' ')}</span></p>
+              {/* ここに地形効果の情報を追加できます */}
+              {selectedHexInfo.terrain === 'forest' && <p className="text-green-300">効果: 視界が制限され、防御ボーナスがあります。</p>}
+              {selectedHexInfo.terrain === 'hills' && <p className="text-gray-300">効果: 高台からの射撃にボーナスがあります。</p>}
+              {selectedHexInfo.terrain === 'road' && <p className="text-yellow-300">効果: 移動速度が向上します。</p>}
+              {selectedHexInfo.terrain === 'city' && <p className="text-blue-300">効果: 防御ボーナスがあり、視界が制限されます。</p>}
+              {selectedHexInfo.terrain === 'water' && <p className="text-blue-300">効果: ほとんどのユニットは移動できません。</p>}
+              {selectedHexInfo.terrain === 'mountain' && <p className="text-gray-300">効果: 移動が非常に困難で、視界が制限されます。</p>}
+              {selectedHexInfo.terrain === 'swamp' && <p className="text-purple-300">効果: 移動速度が低下し、視界が制限されます。</p>}
+              {selectedHexInfo.terrain === 'plains' && <p className="text-green-300">効果: 標準的な地形です。</p>}
+            </div>
+          ) : (
+            <p className="text-gray-400 text-sm">No hex selected.</p>
           )}
         </aside>
 
