@@ -284,11 +284,21 @@ function GameplayContent() {
         }
 
         const currentTime = Date.now();
+        const currentAliveUnits = currentUnitsFromStore.filter(u => u.status !== 'destroyed');
+
         let playerCommandersAlive = 0;
         let enemyCommandersAlive = 0;
 
-        const playerUnits = currentUnitsFromStore.filter(u => u.owner === 'player' && u.status !== 'destroyed');
-        const enemyUnitsActual = currentUnitsFromStore.filter(u => u.owner === 'enemy' && u.status !== 'destroyed');
+        currentAliveUnits.forEach(unit => {
+            const unitDef = UNITS_MAP.get(unit.unitId);
+            if (unitDef?.isCommander) {
+                if (unit.owner === 'player') playerCommandersAlive++;
+                else if (unit.owner === 'enemy') enemyCommandersAlive++;
+            }
+        });
+
+        const playerUnits = currentAliveUnits.filter(u => u.owner === 'player');
+        const enemyUnitsActual = currentAliveUnits.filter(u => u.owner === 'enemy');
         
         const newPlayerVisibilityMap: Record<string, boolean> = {};
         const newLastKnownEnemyPositions: Record<string, { x: number; y: number; timestamp: number }> = { ...currentStoreLastKnownEnemyPositions };
@@ -760,7 +770,6 @@ function GameplayContent() {
 
         }); // End of currentUnitsFromStore.forEach
 
-        const currentAliveUnits = currentUnitsFromStore.filter(u => u.status !== 'destroyed');
         if (currentAliveUnits.length !== currentUnitsFromStore.length) {
             setAllUnitsOnMapDirectly(currentAliveUnits);
         }
@@ -768,11 +777,12 @@ function GameplayContent() {
         if (!currentGameOverMsg) {
             // 司令官が破壊されたかどうかのチェック
             // プレイヤーの司令官が全て破壊された場合
-            if (playerCommandersAlive === 0 && currentUnitsFromStore.some(u => u.owner === 'player' && UNITS_MAP.get(u.unitId)?.isCommander)) {
+            if (playerCommandersAlive === 0) {
+                // プレイヤーの司令官が全て破壊された場合
                 setGameOver("Enemy Wins! (Player Commander Lost)");
             } 
             // 敵の司令官が全て破壊された場合
-            else if (enemyCommandersAlive === 0 && currentUnitsFromStore.some(u => u.owner === 'enemy' && UNITS_MAP.get(u.unitId)?.isCommander)) {
+            else if (enemyCommandersAlive === 0) {
                 setGameOver("Player Wins! (Enemy Commander Lost)");
             }
         }
