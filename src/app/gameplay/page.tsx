@@ -346,50 +346,54 @@ function GameplayContent() {
                 updateUnitOnMap(unit.instanceId, { justHit: false });
             }
 
-            // AUTOMATIC TARGET ACQUISITION AND ENGAGEMENT
-            if (
-                (unit.status === 'idle' || unit.status === 'moving') && // Only auto-acquire if idle or already moving (not turning/attacking)
-                !unit.attackTargetInstanceId && 
-                !unit.isTurning && // Don't interrupt turns for auto-attack
-                (!unit.isMoving || (unit.isMoving && unitDef.canMoveAndAttack)) // Allow if can move and attack, or if idle
-            ) {
-                if (unitDef) { 
+            // AUTOMATIC TARGET ACQUISITION AND ENGAGEMENT for Player Units
+            // プレイヤーユニットが移動中または停止中に、射程内に敵が検出された場合は、停止して攻撃する
+            if (unit.owner === 'player' && (unit.status === 'idle' || unit.status === 'moving') && !unit.attackTargetInstanceId && !unit.isTurning) {
+                if (unitDef) {
                     let potentialTarget: PlacedUnit | null = null;
-                    let minDistance = Infinity;
-                    let bestWeaponRangeForAutoAttack = 0;
+                    let weaponTypeToUse: 'AP' | 'HE' | null = null;
+                    const unitAxial = logicalToAxial(unit.position.x, unit.position.y);
 
-                    if (unitDef.stats.apWeapon && unitDef.stats.apWeapon.range > bestWeaponRangeForAutoAttack) {
-                        bestWeaponRangeForAutoAttack = unitDef.stats.apWeapon.range;
-                    }
-                    if (unitDef.stats.heWeapon && unitDef.stats.heWeapon.range > bestWeaponRangeForAutoAttack) {
-                        bestWeaponRangeForAutoAttack = unitDef.stats.heWeapon.range;
-                    }
-                    
-                    if (bestWeaponRangeForAutoAttack > 0) { 
-                        const unitAxial = logicalToAxial(unit.position.x, unit.position.y);
-
-                        currentUnitsFromStore.forEach(otherUnit => {
-                            if (otherUnit.owner !== unit.owner && otherUnit.status !== 'destroyed') {
+                    // 1. 周囲の敵をAP攻撃可能か検証 (可能なら停止して交戦)
+                    if (unitDef.stats.apWeapon) {
+                        for (const otherUnit of currentUnitsFromStore) {
+                            if (otherUnit.owner === 'enemy' && otherUnit.status !== 'destroyed') {
                                 const otherUnitAxial = logicalToAxial(otherUnit.position.x, otherUnit.position.y);
                                 const distance = hexDistance(unitAxial.q, unitAxial.r, otherUnitAxial.q, otherUnitAxial.r);
+                                const targetDef = UNITS_MAP.get(otherUnit.unitId);
+                                const targetHasArmor = targetDef ? (targetDef.stats.armor.front > 0 || targetDef.stats.armor.side > 0 || targetDef.stats.armor.back > 0 || targetDef.stats.armor.top > 0) : false;
 
-                                if (distance <= bestWeaponRangeForAutoAttack) { 
-                                    if (currentMapDataForLoop && hasLineOfSight(unit, otherUnit, currentMapDataForLoop, currentUnitsFromStore)) {
-                                        if (distance < minDistance) {
-                                            minDistance = distance;
-                                            potentialTarget = otherUnit;
-                                        }
-                                    }
+                                if (distance <= unitDef.stats.apWeapon.range && targetHasArmor && currentMapDataForLoop && hasLineOfSight(unit, otherUnit, currentMapDataForLoop, currentUnitsFromStore)) {
+                                    potentialTarget = otherUnit;
+                                    weaponTypeToUse = 'AP';
+                                    break; // AP攻撃可能な敵が見つかったら、それ以上探さない
                                 }
                             }
-                        });
+                        }
                     }
 
-                    if (potentialTarget) {
+                    // 2. AP攻撃可能な敵がいない場合、HE攻撃可能か検証 (可能なら停止して交戦)
+                    if (!potentialTarget && unitDef.stats.heWeapon) {
+                        for (const otherUnit of currentUnitsFromStore) {
+                            if (otherUnit.owner === 'enemy' && otherUnit.status !== 'destroyed') {
+                                const otherUnitAxial = logicalToAxial(otherUnit.position.x, otherUnit.position.y);
+                                const distance = hexDistance(unitAxial.q, unitAxial.r, otherUnitAxial.q, otherUnitAxial.r);
+                                const targetDef = UNITS_MAP.get(otherUnit.unitId);
+                                const targetHasArmor = targetDef ? (targetDef.stats.armor.front > 0 || targetDef.stats.armor.side > 0 || targetDef.stats.armor.back > 0 || targetDef.stats.armor.top > 0) : false;
+
+                                if (distance <= unitDef.stats.heWeapon.range && !targetHasArmor && currentMapDataForLoop && hasLineOfSight(unit, otherUnit, currentMapDataForLoop, currentUnitsFromStore)) {
+                                    potentialTarget = otherUnit;
+                                    weaponTypeToUse = 'HE';
+                                    break; // HE攻撃可能な敵が見つかったら、それ以上探さない
+                                }
+                            }
+                        }
+                    }
+
+                    if (potentialTarget && weaponTypeToUse) {
                         const target = potentialTarget as PlacedUnit;
-                        // console.log(`AUTO-ATTACK: ${unit.name} (${unit.owner}) detected ${target.name} at distance ${minDistance}. Engaging.`);
                         const dx = target.position.x - unit.position.x;
-                        const dy = target.position.y - target.position.y; // Fix: Should be target.position.y - unit.position.y
+                        const dy = target.position.y - unit.position.y;
                         let newTargetOrientationDeg = unit.orientation;
                         if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
                             newTargetOrientationDeg = (Math.atan2(dy, dx) * (180 / Math.PI) + 360) % 360;
@@ -398,17 +402,13 @@ function GameplayContent() {
 
                         updateUnitOnMap(unit.instanceId, {
                             attackTargetInstanceId: target.instanceId,
-                            status: needsToTurnForAttack ? 'turning' : 'aiming', // If needs to turn, status becomes 'turning', then 'aiming'
-                            isMoving: unit.isMoving && unitDef.canMoveAndAttack ? true : false, // Stop moving unless can move and attack
-                            currentPath: unit.isMoving && unitDef.canMoveAndAttack ? unit.currentPath : null, // Clear path if stopping
-                            moveTargetPosition: unit.isMoving && unitDef.canMoveAndAttack ? unit.moveTargetPosition : null,
+                            status: needsToTurnForAttack ? 'turning' : 'aiming',
+                            isMoving: false, // 停止して攻撃
+                            currentPath: null, // パスをクリア
+                            moveTargetPosition: null, // 移動ターゲットをクリア
                             targetOrientation: newTargetOrientationDeg,
                             isTurning: needsToTurnForAttack,
                         });
-                        // Skip other logic for this unit this tick if it just acquired a target and needs to turn/aim
-                        // This 'return' was causing issues by skipping subsequent logic like production.
-                        // Instead, subsequent 'else if' blocks will handle other states.
-                        // return; 
                     }
                 }
             }
