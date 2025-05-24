@@ -600,89 +600,99 @@ function GameplayContent() {
                 }
             }
 
-            if (unitDef.isCommander && unit.productionQueue) {
-                const newTimeLeftMs = unit.productionQueue.timeLeftMs - gameTickRate;
+            if (unitDef.isCommander && unit.productionQueue && unit.productionQueue.length > 0) {
+                const currentProductionItem = unit.productionQueue[0];
+                const newTimeLeftMs = currentProductionItem.timeLeftMs - gameTickRate;
 
                 if (newTimeLeftMs <= 0) {
-                    const producedUnitId = unit.productionQueue.unitIdToProduce;
+                    const producedUnitId = currentProductionItem.unitIdToProduce;
                     const producedUnitDef = UNITS_MAP.get(producedUnitId);
-                    const productionOriginalCost = unit.productionQueue.productionCost;
+                    const productionOriginalCost = currentProductionItem.productionCost;
 
-                    if (producedUnitDef) {
-                        let spawnPosition: { x: number; y: number } | null = null;
-                        const commanderAxial = logicalToAxial(unit.position.x, unit.position.y);
-                        const potentialSpawnOffsets = [
-                            { q: 1, r: 0 }, { q: -1, r: 0 }, { q: 0, r: 1 }, { q: 0, r: -1 }, 
-                            { q: 1, r: -1 }, { q: -1, r: 1 },
-                            { q: 2, r: 0 }, { q: -2, r: 0 }, { q: 0, r: 2 }, { q: 0, r: -2 },
-                            { q: 1, r: 1 }, { q: -1, r: -1 }, { q: 2, r: -1 }, { q: -2, r: 1 },
-                            { q: 1, r: -2 }, { q: -1, r: 2 }, { q: 2, r: -2 }, { q: -2, r: 2 },
-                        ];
-
-                        for (const offset of potentialSpawnOffsets) {
-                            const spawnAxial = { q: commanderAxial.q + offset.q, r: commanderAxial.r + offset.r };
-                            const spawnLogical = axialToLogical(spawnAxial.q, spawnAxial.r);
-                            const hexKey = `${spawnAxial.q},${spawnAxial.r}`;
-                            
-                            if (!currentMapDataForLoop || 
-                                spawnLogical.x < 0 || spawnLogical.x >= currentMapDataForLoop.cols ||
-                                spawnLogical.y < 0 || spawnLogical.y >= currentMapDataForLoop.rows) {
-                                continue;
-                            }
-
-                            const hexData = currentMapDataForLoop?.hexes?.[hexKey];
-                            const isOccupied = unitsToProcess.some( // unitsToProcess を使用
-                                u => u.position.x === spawnLogical.x && u.position.y === spawnLogical.y && u.status !== 'destroyed'
-                            );
-
-                            if (hexData && TERRAIN_MOVE_COSTS[hexData.terrain] !== Infinity && !isOccupied) {
-                                spawnPosition = spawnLogical;
-                                break;
-                            }
-                        }
-
-                        if (spawnPosition) {
-                            const newUnitInstance: PlacedUnit = {
-                                instanceId: `${producedUnitDef.id}_${unit.owner}_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-                                unitId: producedUnitDef.id,
-                                name: producedUnitDef.name,
-                                cost: producedUnitDef.cost,
-                                position: spawnPosition,
-                                currentHp: producedUnitDef.stats.hp,
-                                owner: unit.owner,
-                                orientation: unit.orientation,
-                                status: 'idle',
-                                isTurning: false, isMoving: false, moveTargetPosition: null, currentPath: null, timeToNextHex: null,
-                                attackTargetInstanceId: null, lastAttackTimeHE: undefined, lastAttackTimeAP: undefined,
-                                lastSuccessfulAttackTimestamp: undefined, justHit: false, hitTimestamp: undefined, 
-                                productionQueue: null,
-                            };
-                            unitsToProcess.push(newUnitInstance); // 直接追加
+                    if (!producedUnitDef) {
+                        console.error(`[Production] Unit definition not found for produced unit ID: ${producedUnitId}. Refunding cost ${productionOriginalCost}.`);
+                        if (unit.owner === 'player') {
+                            addPlayerResourcesAction(productionOriginalCost);
                         } else {
-                            console.warn(`[Production] Could not find valid spawn location for ${producedUnitDef.name} by ${unit.name} (${unit.owner}). Refunding cost ${productionOriginalCost}.`);
-                            if (unit.owner === 'player') {
-                                addPlayerResourcesAction(productionOriginalCost);
-                            } else {
-                                addEnemyResourcesAction(productionOriginalCost);
-                            }
+                            addEnemyResourcesAction(productionOriginalCost);
                         }
+                        // 生産が完了したらキューの最初のアイテムを削除
+                        const updatedQueue = unit.productionQueue.slice(1);
+                        unitsToProcess[index] = { ...unit, productionQueue: updatedQueue, status: updatedQueue.length > 0 ? 'producing' : 'idle' };
+                        return; // ユニット定義がない場合はここで処理を終了
+                    }
+
+                    let spawnPosition: { x: number; y: number } | null = null;
+                    const commanderAxial = logicalToAxial(unit.position.x, unit.position.y);
+                    const potentialSpawnOffsets = [
+                        { q: 1, r: 0 }, { q: -1, r: 0 }, { q: 0, r: 1 }, { q: 0, r: -1 }, 
+                        { q: 1, r: -1 }, { q: -1, r: 1 },
+                        { q: 2, r: 0 }, { q: -2, r: 0 }, { q: 0, r: 2 }, { q: 0, r: -2 },
+                        { q: 1, r: 1 }, { q: -1, r: -1 }, { q: 2, r: -1 }, { q: -2, r: 1 },
+                        { q: 1, r: -2 }, { q: -1, r: 2 }, { q: 2, r: -2 }, { q: -2, r: 2 },
+                    ];
+
+                    for (const offset of potentialSpawnOffsets) {
+                        const spawnAxial = { q: commanderAxial.q + offset.q, r: commanderAxial.r + offset.r };
+                        const spawnLogical = axialToLogical(spawnAxial.q, spawnAxial.r);
+                        const hexKey = `${spawnAxial.q},${spawnAxial.r}`;
+                        
+                        if (!currentMapDataForLoop || 
+                            spawnLogical.x < 0 || spawnLogical.x >= currentMapDataForLoop.cols ||
+                            spawnLogical.y < 0 || spawnLogical.y >= currentMapDataForLoop.rows) {
+                            continue;
+                        }
+
+                        const hexData = currentMapDataForLoop?.hexes?.[hexKey];
+                        const isOccupied = unitsToProcess.some( // unitsToProcess を使用
+                            u => u.position.x === spawnLogical.x && u.position.y === spawnLogical.y && u.status !== 'destroyed'
+                        );
+
+                        if (hexData && TERRAIN_MOVE_COSTS[hexData.terrain] !== Infinity && !isOccupied) {
+                            spawnPosition = spawnLogical;
+                            break;
+                        }
+                    }
+
+                    if (spawnPosition) {
+                        const newUnitInstance: PlacedUnit = {
+                            instanceId: `${producedUnitDef.id}_${unit.owner}_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+                            unitId: producedUnitDef.id,
+                            name: producedUnitDef.name,
+                            cost: producedUnitDef.cost,
+                            position: spawnPosition,
+                            currentHp: producedUnitDef.stats.hp,
+                            owner: unit.owner,
+                            orientation: unit.orientation,
+                            status: 'idle',
+                            isTurning: false, isMoving: false, moveTargetPosition: null, currentPath: null, timeToNextHex: null,
+                            attackTargetInstanceId: null, lastAttackTimeHE: undefined, lastAttackTimeAP: undefined,
+                            lastSuccessfulAttackTimestamp: undefined, justHit: false, hitTimestamp: undefined, 
+                            productionQueue: [], // 新しいユニットの生産キューは空
+                        };
+                        unitsToProcess.push(newUnitInstance); // 直接追加
                     } else {
-                        console.error(`[Production] Unit definition not found for produced unit ID: ${unit.productionQueue.unitIdToProduce}. Refunding cost ${productionOriginalCost}.`);
-                         if (unit.owner === 'player') {
+                        console.warn(`[Production] Could not find valid spawn location for ${producedUnitDef.name} by ${unit.name} (${unit.owner}). Refunding cost ${productionOriginalCost}.`);
+                        if (unit.owner === 'player') {
                             addPlayerResourcesAction(productionOriginalCost);
                         } else {
                             addEnemyResourcesAction(productionOriginalCost);
                         }
                     }
-                    unitsToProcess[index] = { ...unit, productionQueue: null }; // 直接更新
+                    // 生産が完了したらキューの最初のアイテムを削除
+                    const updatedQueue = unit.productionQueue.slice(1);
+                    unitsToProcess[index] = { ...unit, productionQueue: updatedQueue, status: updatedQueue.length > 0 ? 'producing' : 'idle' };
                 } else {
-                    const updatedQueue = { ...unit.productionQueue, timeLeftMs: newTimeLeftMs };
-                    unitsToProcess[index] = { ...unit, productionQueue: updatedQueue, status: 'producing' }; // 直接更新
+                    // 生産中のアイテムの残り時間を更新
+                    const updatedQueue = [...unit.productionQueue];
+                    updatedQueue[0] = { ...updatedQueue[0], timeLeftMs: newTimeLeftMs };
+                    unitsToProcess[index] = { ...unit, productionQueue: updatedQueue, status: 'producing' };
                 }
             }
 
             if (unit.owner === 'enemy' && !currentGameOverMsg) {
-                if (unit.status === 'idle' || unit.status === 'moving' || (unitDef.isCommander && !unit.productionQueue && unit.status !== 'producing') ) {
+                // AIの生産ロジックもキューの存在を確認するように変更
+                if (unit.status === 'idle' || unit.status === 'moving' || (unitDef.isCommander && (!unit.productionQueue || unit.productionQueue.length === 0) && unit.status !== 'producing') ) {
                     const aiDifficulty = useGameSettingsStore.getState().aiDifficulty;
                     const allUnitsCurrent = unitsToProcess; // unitsToProcess を使用
                     const currentEnemyRes = useGameSettingsStore.getState().enemyResources;
@@ -725,11 +735,13 @@ function GameplayContent() {
                                 }
                                 break;
                             case 'PRODUCE':
+                                // AIの生産は、startUnitProductionActionがキューを管理するのでそのまま
                                 const { success } = startUnitProductionAction(unit.instanceId, action.unitIdToProduce, 'enemy');
                                 break;
                             case 'IDLE':
                             case 'CAPTURE':
-                                if (unit.status !== 'idle' && !unit.attackTargetInstanceId && !unit.isMoving && !unit.isTurning && !unit.productionQueue) {
+                                // 生産キューが空の場合のみアイドル状態に設定
+                                if (unit.status !== 'idle' && !unit.attackTargetInstanceId && !unit.isMoving && !unit.isTurning && (!unit.productionQueue || unit.productionQueue.length === 0)) {
                                    unitsToProcess[index] = { ...unit, status: 'idle' }; // 直接更新
                                 }
                                 break;
@@ -929,7 +941,7 @@ function GameplayContent() {
                 isTurning: false, isMoving: false, moveTargetPosition: null, currentPath: null, timeToNextHex: null,
                 attackTargetInstanceId: null, lastAttackTimeHE: undefined, lastAttackTimeAP: undefined,
                 lastSuccessfulAttackTimestamp: undefined, justHit: false, hitTimestamp: undefined, 
-                productionQueue: null,
+                productionQueue: [],
             });
         }
     }
@@ -1029,16 +1041,28 @@ function GameplayContent() {
           {detailedSelectedUnitInfo && UNITS_MAP.get(detailedSelectedUnitInfo.unitId)?.isCommander && detailedSelectedUnitInfo.owner === 'player' && (
             <>
               <h2 className="text-lg font-semibold border-b border-gray-700 pb-2 pt-4">Unit Production</h2>
-              {detailedSelectedUnitInfo.productionQueue && (
-                <div className="text-sm p-2 bg-gray-700 rounded mb-4"> {/* Added mb-4 for spacing */}
-                  <p>Producing: {UNITS_MAP.get(detailedSelectedUnitInfo.productionQueue.unitIdToProduce)?.name}</p>
-                  <p>Time Left: {(detailedSelectedUnitInfo.productionQueue.timeLeftMs / 1000).toFixed(1)}s</p>
-                  <div className="w-full bg-gray-600 rounded-full h-2.5 my-1">
-                    <div
-                      className="bg-blue-500 h-2.5 rounded-full"
-                      style={{ width: `${100 - (detailedSelectedUnitInfo.productionQueue.timeLeftMs / detailedSelectedUnitInfo.productionQueue.originalProductionTimeMs) * 100}%` }}
-                    ></div>
-                  </div>
+              {detailedSelectedUnitInfo.productionQueue && detailedSelectedUnitInfo.productionQueue.length > 0 && (
+                <div className="text-sm p-2 bg-gray-700 rounded mb-4">
+                  <p className="font-semibold mb-1">Production Queue:</p>
+                  {detailedSelectedUnitInfo.productionQueue.map((item, idx) => (
+                    <div key={idx} className={`mb-2 ${idx === 0 ? 'border-b border-gray-600 pb-2' : ''}`}>
+                      <p>
+                        {idx === 0 ? 'Producing:' : 'Queued:'} {UNITS_MAP.get(item.unitIdToProduce)?.name}
+                        <span className="ml-2 text-xs text-gray-400">({UNITS_MAP.get(item.unitIdToProduce)?.cost}C)</span>
+                      </p>
+                      {idx === 0 && (
+                        <>
+                          <p>Time Left: {(item.timeLeftMs / 1000).toFixed(1)}s</p>
+                          <div className="w-full bg-gray-600 rounded-full h-2.5 my-1">
+                            <div
+                              className="bg-blue-500 h-2.5 rounded-full"
+                              style={{ width: `${100 - (item.timeLeftMs / item.originalProductionTimeMs) * 100}%` }}
+                            ></div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
               <div className="space-y-2 text-sm">
@@ -1053,7 +1077,7 @@ function GameplayContent() {
                       size="sm"
                       variant="secondary"
                       onClick={() => detailedSelectedUnitInfo && handleStartProductionRequest(detailedSelectedUnitInfo.instanceId, unitToProduce.id)}
-                      disabled={playerResources < unitToProduce.cost || !!detailedSelectedUnitInfo.productionQueue || !!gameOverMessage}
+                      disabled={playerResources < unitToProduce.cost || !!gameOverMessage} // productionQueueのチェックを削除
                     >
                       Build
                     </Button>

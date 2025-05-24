@@ -61,7 +61,7 @@ export interface PlacedUnit {
     productionCost: number;
     timeLeftMs: number;
     originalProductionTimeMs: number;
-  } | null;
+  }[]; // 生産キューを配列に変更
 }
 
 // ストアの状態の型定義
@@ -199,7 +199,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
         orientation: 0, 
         isTurning: false, isMoving: false, moveTargetPosition: null, currentPath: null, timeToNextHex: null,
         attackTargetInstanceId: null, status: 'idle', lastAttackTimeHE: undefined, lastAttackTimeAP: undefined,
-        lastSuccessfulAttackTimestamp: undefined, justHit: false, hitTimestamp: undefined, productionQueue: null,
+        lastSuccessfulAttackTimestamp: undefined, justHit: false, hitTimestamp: undefined, productionQueue: [], // ここを修正
       };
     }).filter(unit => unit !== null) as PlacedUnit[];
 
@@ -231,7 +231,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
             position: aiCommanderPos, currentHp: aiCommanderDef.stats.hp, owner: 'enemy', orientation: 180,
             isTurning: false, isMoving: false, moveTargetPosition: null, currentPath: null, timeToNextHex: null,
             attackTargetInstanceId: null, status: 'idle', lastAttackTimeHE: undefined, lastAttackTimeAP: undefined,
-            lastSuccessfulAttackTimestamp: undefined, justHit: false, hitTimestamp: undefined, productionQueue: null,
+            lastSuccessfulAttackTimestamp: undefined, justHit: false, hitTimestamp: undefined, productionQueue: [], // ここを修正
           });
 
           let availableSpotsForAIInfantry = enemyDeployArea.filter(spot =>
@@ -253,7 +253,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
                         position: infantryPos, currentHp: rifleDef.stats.hp, owner: 'enemy', orientation: 180,
                         isTurning: false, isMoving: false, moveTargetPosition: null, currentPath: null, timeToNextHex: null,
                         attackTargetInstanceId: null, status: 'idle', lastAttackTimeHE: undefined, lastAttackTimeAP: undefined,
-                        lastSuccessfulAttackTimestamp: undefined, justHit: false, hitTimestamp: undefined, productionQueue: null,
+                        lastSuccessfulAttackTimestamp: undefined, justHit: false, hitTimestamp: undefined, productionQueue: [], // ここを修正
                     });
                 }
               } else {
@@ -318,7 +318,7 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
         lastSuccessfulAttackTimestamp: unit.lastSuccessfulAttackTimestamp ?? undefined,
         justHit: unit.justHit ?? false,
         hitTimestamp: unit.hitTimestamp ?? undefined,
-        productionQueue: unit.productionQueue ?? null,
+        productionQueue: unit.productionQueue ?? [], // ここを修正
     };
     set(state => ({ allUnitsOnMap: [...state.allUnitsOnMap, unitWithDefaults] }));
   },
@@ -384,27 +384,38 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
 
     if (!commander || commander.owner !== owner) return { success: false, message: "Invalid commander or owner." };
     if (!unitDef) return { success: false, message: "Invalid unit to produce." };
-    if (commander.productionQueue) return { success: false, message: "Commander is already producing." };
+    // 生産キューがnullまたはundefinedの場合は空の配列として扱う
+    const currentProductionQueue = commander.productionQueue || [];
+    
+    // キューの長さをチェック (例: 最大5つまで予約可能)
+    const MAX_PRODUCTION_QUEUE_SIZE = 5; 
+    if (currentProductionQueue.length >= MAX_PRODUCTION_QUEUE_SIZE) {
+      return { success: false, message: `Production queue is full (max ${MAX_PRODUCTION_QUEUE_SIZE} units).` };
+    }
+
     if (currentResources < unitDef.cost) return { success: false, message: "Not enough resources." };
 
     const productionTimeMs = unitDef.productionTime * 1000;
     if (owner === 'player') get().addPlayerResources(-unitDef.cost);
     else get().addEnemyResources(-unitDef.cost);
 
+    const newProductionItem = { unitIdToProduce, productionCost: unitDef.cost, timeLeftMs: productionTimeMs, originalProductionTimeMs: productionTimeMs };
+    const updatedProductionQueue = [...currentProductionQueue, newProductionItem];
+
     set(state => ({
       allUnitsOnMap: state.allUnitsOnMap.map(u =>
         u.instanceId === commanderInstanceId
-          ? { ...u, productionQueue: { unitIdToProduce, productionCost: unitDef.cost, timeLeftMs: productionTimeMs, originalProductionTimeMs: productionTimeMs }, status: 'producing' }
+          ? { ...u, productionQueue: updatedProductionQueue, status: updatedProductionQueue.length > 0 ? 'producing' : 'idle' }
           : u
       ),
     }));
-    return { success: true, message: `Started producing ${unitDef.name} for ${owner}` };
+    return { success: true, message: `Added ${unitDef.name} to production queue for ${owner}` };
   },
   clearCommanderProductionQueue: (commanderInstanceId) => {
     set(state => ({
       allUnitsOnMap: state.allUnitsOnMap.map(u =>
         u.instanceId === commanderInstanceId
-          ? { ...u, productionQueue: null, status: 'idle' } 
+          ? { ...u, productionQueue: [], status: 'idle' } // キューを空の配列に設定
           : u
       ),
     }));
