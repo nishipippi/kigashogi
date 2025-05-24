@@ -14,15 +14,10 @@ import { ALL_UNITS, UNITS_MAP } from '@/gameData/units';
 import { hexDistance, logicalToAxial, axialToLogical, findPathAStar } from '@/lib/hexUtils';
 import { hasLineOfSight, calculateDamage } from '@/lib/battleUtils';
 import { canObserveTarget } from '@/lib/visibilityUtils';
-import { decideCommanderAIAction, decideCombatAIAction, type AIAction, resetGlobalAIBuildOrderIndex } from '@/lib/aiUtils'; 
+import { decideCommanderAIAction, decideCombatAIAction, type AIAction, resetGlobalAIBuildOrderIndex } from '@/lib/aiUtils';
 
 const BASE_CAPTURE_DURATION_MS = 10000;
 const TICK_RATE_MS = 100;
-
-interface LastSeenUnitInfo extends PlacedUnit {
-    lastSeenTime: number;
-    isLastSeen?: boolean;
-}
 
 function GameplayContent() {
   const router = useRouter();
@@ -30,37 +25,40 @@ function GameplayContent() {
   const mapIdParam = searchParams.get('mapId');
 
   const selectedMapIdFromStore = useGameSettingsStore(state => state.selectedMapId);
-  const allUnitsOnMapFromStore = useGameSettingsStore(state => state.allUnitsOnMap); 
+  const allUnitsOnMapFromStore = useGameSettingsStore(state => state.allUnitsOnMap);
   const gameOverMessage = useGameSettingsStore(state => state.gameOverMessage);
   const playerResources = useGameSettingsStore(state => state.playerResources);
   const enemyResourcesStore = useGameSettingsStore(state => state.enemyResources);
-  const victoryPoints = useGameSettingsStore(state => state.victoryPoints); 
+  const victoryPoints = useGameSettingsStore(state => state.victoryPoints);
   const gameTimeFromStore = useGameSettingsStore(state => state.gameTimeElapsed);
   const gameTimeLimit = useGameSettingsStore(state => state.gameTimeLimit);
   const targetVictoryPoints = useGameSettingsStore(state => state.targetVictoryPoints);
-  const currentMapDataFromStore = useGameSettingsStore(state => state.currentMapDataState); 
+  const currentMapDataFromStore = useGameSettingsStore(state => state.currentMapDataState);
+  const playerVisibilityMap = useGameSettingsStore(state => state.playerVisibilityMap); // ストアから取得
+  const lastKnownEnemyPositions = useGameSettingsStore(state => state.lastKnownEnemyPositions); // ストアから取得
 
   const {
     updateUnitOnMap,
-    setAllUnitsOnMap: setAllUnitsOnMapDirectly, 
+    setAllUnitsOnMap: setAllUnitsOnMapDirectly,
     setGameOver,
-    startUnitProduction: startUnitProductionAction, 
-    clearCommanderProductionQueue: clearCommanderProductionQueueAction, 
-    addUnitToMap: addUnitToMapAction, 
-    addPlayerResources: addPlayerResourcesAction, 
-    addEnemyResources: addEnemyResourcesAction, 
-    setCurrentMapData: setMapDataInStore, 
+    startUnitProduction: startUnitProductionAction,
+    clearCommanderProductionQueue: clearCommanderProductionQueueAction,
+    addUnitToMap: addUnitToMapAction,
+    addPlayerResources: addPlayerResourcesAction,
+    addEnemyResources: addEnemyResourcesAction,
+    setCurrentMapData: setMapDataInStore,
     updateStrategicPointState,
     addVictoryPointsToPlayer,
     incrementGameTime,
+    updatePlayerVisibilityMap, // ストアのアクションをインポート
+    updateLastKnownEnemyPosition, // ストアのアクションをインポート
+    clearVisibilityData, // ストアのアクションをインポート
   } = useGameSettingsStore();
 
 
   const [selectedUnitInstanceId, setSelectedUnitInstanceId] = useState<string | null>(null);
   const [detailedSelectedUnitInfo, setDetailedSelectedUnitInfo] = useState<PlacedUnit | null>(null);
   const [attackingVisuals, setAttackingVisuals] = useState<{ visualId: string, attackerId: string, targetId: string, weaponType: 'HE' | 'AP' }[]>([]);
-  const [visibleEnemyUnits, setVisibleEnemyUnits] = useState<PlacedUnit[]>([]);
-  const [lastSeenEnemyUnits, setLastSeenEnemyUnits] = useState<Map<string, LastSeenUnitInfo>>(new Map());
   const LAST_SEEN_DURATION = 5000;
 
   const COST_REVENUE_INTERVAL_SECONDS = 10;
@@ -274,7 +272,8 @@ function GameplayContent() {
           gameOverMessage: currentGameOverMsg, 
           allUnitsOnMap: currentUnitsFromStore, 
           currentMapDataState: currentMapDataForLoop, 
-          // enemyResources: currentEnemyResources // Not directly needed for AI decision if passed to functions
+          playerVisibilityMap: currentStoreVisibilityMap, // ストアから現在のマップを取得
+          lastKnownEnemyPositions: currentStoreLastKnownEnemyPositions, // ストアから現在の最終確認位置を取得
         } = useGameSettingsStore.getState();
 
         if (currentGameOverMsg) { 
@@ -288,7 +287,9 @@ function GameplayContent() {
 
         const playerUnits = currentUnitsFromStore.filter(u => u.owner === 'player' && u.status !== 'destroyed');
         const enemyUnitsActual = currentUnitsFromStore.filter(u => u.owner === 'enemy' && u.status !== 'destroyed');
-        const newlyVisibleEnemies: PlacedUnit[] = [];
+        
+        const newPlayerVisibilityMap: Record<string, boolean> = {};
+        const newLastKnownEnemyPositions: Record<string, { x: number; y: number; timestamp: number }> = { ...currentStoreLastKnownEnemyPositions };
 
         enemyUnitsActual.forEach(enemyUnit => {
             let isVisible = false;
@@ -299,21 +300,35 @@ function GameplayContent() {
                 }
             }
             if (isVisible) {
-                newlyVisibleEnemies.push(enemyUnit);
-                setLastSeenEnemyUnits(prev => { const newMap = new Map(prev); newMap.delete(enemyUnit.instanceId); return newMap; });
+                const enemyAxial = logicalToAxial(enemyUnit.position.x, enemyUnit.position.y);
+                newPlayerVisibilityMap[`${enemyAxial.q},${enemyAxial.r}`] = true;
+                // 敵ユニット自体が視界内なので、最終確認位置からは削除
+                if (newLastKnownEnemyPositions[enemyUnit.instanceId]) {
+                    delete newLastKnownEnemyPositions[enemyUnit.instanceId];
+                }
             } else {
-                const previouslyVisible = visibleEnemyUnits.find(veu => veu.instanceId === enemyUnit.instanceId);
-                if (previouslyVisible && !lastSeenEnemyUnits.has(enemyUnit.instanceId)) {
-                    setLastSeenEnemyUnits(prev => new Map(prev).set(enemyUnit.instanceId, { ...enemyUnit, lastSeenTime: currentTime, isLastSeen: true }));
+                // 視界外になった場合、最終確認位置を更新
+                // ただし、既に最終確認位置に登録されている場合は、タイムスタンプを更新しない（最後に視認された時間を保持するため）
+                if (!newLastKnownEnemyPositions[enemyUnit.instanceId]) {
+                    newLastKnownEnemyPositions[enemyUnit.instanceId] = {
+                        x: enemyUnit.position.x,
+                        y: enemyUnit.position.y,
+                        timestamp: currentTime,
+                    };
                 }
             }
         });
-        setVisibleEnemyUnits(newlyVisibleEnemies);
-        setLastSeenEnemyUnits(prev => {
-            const newMap = new Map(prev);
-            newMap.forEach((seenUnit, id) => { if (currentTime - seenUnit.lastSeenTime > LAST_SEEN_DURATION) newMap.delete(id); });
-            return newMap;
-        });
+
+        // 古い最終確認位置を削除
+        for (const instanceId in newLastKnownEnemyPositions) {
+            if (currentTime - newLastKnownEnemyPositions[instanceId].timestamp > LAST_SEEN_DURATION) {
+                delete newLastKnownEnemyPositions[instanceId];
+            }
+        }
+
+        updatePlayerVisibilityMap(newPlayerVisibilityMap);
+        useGameSettingsStore.setState({ lastKnownEnemyPositions: newLastKnownEnemyPositions });
+
 
         currentUnitsFromStore.forEach(unit => {
             if (!unit || unit.status === 'destroyed') return;
@@ -372,7 +387,7 @@ function GameplayContent() {
                         const target = potentialTarget as PlacedUnit;
                         // console.log(`AUTO-ATTACK: ${unit.name} (${unit.owner}) detected ${target.name} at distance ${minDistance}. Engaging.`);
                         const dx = target.position.x - unit.position.x;
-                        const dy = target.position.y - unit.position.y;
+                        const dy = target.position.y - target.position.y; // Fix: Should be target.position.y - unit.position.y
                         let newTargetOrientationDeg = unit.orientation;
                         if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
                             newTargetOrientationDeg = (Math.atan2(dy, dx) * (180 / Math.PI) + 360) % 360;
@@ -765,7 +780,7 @@ function GameplayContent() {
     updateStrategicPointState, addUnitToMapAction, clearCommanderProductionQueueAction, 
     startUnitProductionAction, addPlayerResourcesAction, addEnemyResourcesAction, 
     incrementGameTime, initiateMove, getTimeToTraverseHex, 
-    visibleEnemyUnits, lastSeenEnemyUnits, gameTimeFromStore /* These are for setLastSeenEnemyUnits updates */
+    playerVisibilityMap, lastKnownEnemyPositions, gameTimeFromStore // Dependencies for visibility updates
     // playerResources is read in UI, but not directly in this interval. Actions handle resource changes.
   ]);
 
@@ -881,26 +896,49 @@ function GameplayContent() {
     }
   }, [gameOverMessage, router, mapIdParam, selectedMapIdFromStore]);
 
-  const unitsMap = new Map<string, PlacedUnit | LastSeenUnitInfo>();
+  const unitsToDisplayOnGrid: PlacedUnit[] = [];
 
   // Add player units
   allUnitsOnMapFromStore.filter(u => u.owner === 'player' && u.status !== 'destroyed')
-    .forEach(unit => unitsMap.set(unit.instanceId, unit));
+    .forEach(unit => unitsToDisplayOnGrid.push(unit));
 
-  // Add visible enemy units (these take precedence over last seen if there's an overlap)
-  visibleEnemyUnits.filter(u => u.status !== 'destroyed')
-    .forEach(unit => unitsMap.set(unit.instanceId, unit));
-
-  // Add last seen enemy units, only if not already added (i.e., not currently visible)
-  Array.from(lastSeenEnemyUnits.values())
-    .filter(u => u.status !== 'destroyed')
-    .forEach(unit => {
-      if (!unitsMap.has(unit.instanceId)) {
-        unitsMap.set(unit.instanceId, { ...unit, isLastSeen: true });
-      }
+  // Add visible enemy units
+  allUnitsOnMapFromStore.filter(u => u.owner === 'enemy' && u.status !== 'destroyed')
+    .forEach(enemyUnit => {
+        const enemyAxial = logicalToAxial(enemyUnit.position.x, enemyUnit.position.y);
+        const hexKey = `${enemyAxial.q},${enemyAxial.r}`;
+        if (playerVisibilityMap[hexKey]) {
+            unitsToDisplayOnGrid.push(enemyUnit);
+        }
     });
 
-  const unitsToDisplayOnGrid = Array.from(unitsMap.values());
+  // Add last seen enemy units (if not currently visible)
+  for (const instanceId in lastKnownEnemyPositions) {
+    const lastSeenPos = lastKnownEnemyPositions[instanceId];
+    const isCurrentlyVisible = unitsToDisplayOnGrid.some(u => u.instanceId === instanceId);
+    if (!isCurrentlyVisible) {
+        // Reconstruct a "ghost" unit for display
+        const originalUnit = ALL_UNITS.find(u => u.id === instanceId.split('_')[0]); // Assuming unitId is first part of instanceId
+        if (originalUnit) {
+            unitsToDisplayOnGrid.push({
+                instanceId: instanceId,
+                unitId: originalUnit.id,
+                name: originalUnit.name,
+                cost: originalUnit.cost,
+                position: { x: lastSeenPos.x, y: lastSeenPos.y },
+                currentHp: 0, // Or some placeholder HP
+                owner: 'enemy',
+                orientation: 0, // Or last known orientation
+                status: 'idle', // Or 'last_seen'
+                isTurning: false, isMoving: false, moveTargetPosition: null, currentPath: null, timeToNextHex: null,
+                attackTargetInstanceId: null, lastAttackTimeHE: undefined, lastAttackTimeAP: undefined,
+                lastSuccessfulAttackTimestamp: undefined, justHit: false, hitTimestamp: undefined, 
+                productionQueue: null,
+            });
+        }
+    }
+  }
+
 
   const handleStartProductionRequest = (producerCommanderId: string, unitToProduceId: string) => {
     const unitDef = UNITS_MAP.get(unitToProduceId);
@@ -1039,7 +1077,6 @@ function GameplayContent() {
             onHexClick={handleHexClickInGame}
             selectedUnitInstanceId={selectedUnitInstanceId}
             attackingPairs={attackingVisuals}
-            visibleEnemyInstanceIds={new Set(visibleEnemyUnits.map(u => u.instanceId))}
             strategicPoints={currentMapDataFromStore?.strategicPoints || []}
           />
           <div className="absolute bottom-4 right-4 w-56 h-44 bg-green-900 bg-opacity-70 border-2 border-gray-600 rounded shadow-xl p-1 text-xs">

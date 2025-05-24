@@ -81,6 +81,9 @@ interface GameSettingsState {
   targetVictoryPoints: number;
   playerResources: number;
   enemyResources: number;
+  playerVisibilityMap: Record<string, boolean>; // キーは "q,r" 形式の文字列
+  lastKnownEnemyPositions: Record<string, { x: number; y: number; timestamp: number }>; // キーはユニットの instanceId
+
   setAiDifficulty: (difficulty: AiDifficulty) => void;
   setPlayerFaction: (faction: Faction) => void;
   setEnemyFaction: (faction: Faction) => void;
@@ -103,6 +106,9 @@ interface GameSettingsState {
   addEnemyResources: (amount: number) => void;
   startUnitProduction: (commanderInstanceId: string, unitIdToProduce: string, owner: 'player' | 'enemy') => { success: boolean, message: string };
   clearCommanderProductionQueue: (commanderInstanceId: string) => void;
+  updatePlayerVisibilityMap: (visibilityMap: Record<string, boolean>) => void;
+  updateLastKnownEnemyPosition: (instanceId: string, position: { x: number; y: number }, timestamp: number) => void;
+  clearVisibilityData: () => void;
 }
 
 export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
@@ -121,6 +127,18 @@ export const useGameSettingsStore = create<GameSettingsState>((set, get) => ({
   targetVictoryPoints: 100,
   playerResources: 500,
   enemyResources: 500,
+  playerVisibilityMap: {},
+  lastKnownEnemyPositions: {},
+
+  updatePlayerVisibilityMap: (visibilityMap) => set({ playerVisibilityMap: visibilityMap }),
+  updateLastKnownEnemyPosition: (instanceId, position, timestamp) =>
+    set(state => ({
+      lastKnownEnemyPositions: {
+        ...state.lastKnownEnemyPositions,
+        [instanceId]: { x: position.x, y: position.y, timestamp },
+      },
+    })),
+  clearVisibilityData: () => set({ playerVisibilityMap: {}, lastKnownEnemyPositions: {} }),
 
   setAiDifficulty: (difficulty) => set({ aiDifficulty: difficulty }),
   setPlayerFaction: (faction) => set({ playerFaction: faction }),

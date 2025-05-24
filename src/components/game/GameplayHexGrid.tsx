@@ -1,30 +1,30 @@
 // src/components/game/GameplayHexGrid.tsx
 "use client";
 
+"use client";
+
 import React from 'react';
-import type { MapData, StrategicPoint, HexData } from '@/types/map'; // StrategicPoint, HexData をインポート
-import type { PlacedUnit } from '@/stores/gameSettingsStore';
-import { getHexCorners, hexToPixel, logicalToAxial, axialToLogical, getHexWidth, getHexHeight } from '@/lib/hexUtils'; // axialToLogical を追加
+import type { MapData, StrategicPoint, HexData } from '@/types/map';
+import { useGameSettingsStore, type PlacedUnit } from '@/stores/gameSettingsStore'; // ストアをインポート
+import { getHexCorners, hexToPixel, logicalToAxial, axialToLogical, getHexWidth, getHexHeight } from '@/lib/hexUtils';
 import { UNITS_MAP } from '@/gameData/units';
 
-// gameplay/page.tsx から渡される LastSeenUnitInfo の型 (もしあれば)
-// PlacedUnit と共通部分が多い場合は、GameplayHexGridProps の placedUnits の型を
-// (PlacedUnit | LastSeenUnitInfo)[] のようにする
-interface LastSeenUnitInfo extends PlacedUnit {
-    lastSeenTime: number;
-    isLastSeen?: boolean;
-}
+// LastSeenUnitInfo はストアで管理するため、ここでは不要
+// interface LastSeenUnitInfo extends PlacedUnit {
+//     lastSeenTime: number;
+//     isLastSeen?: boolean;
+// }
 
 
 interface GameplayHexGridProps {
   mapData: MapData | null;
   hexSize?: number;
-  placedUnits: (PlacedUnit | LastSeenUnitInfo)[]; // isLastSeen を考慮
+  placedUnits: PlacedUnit[]; // LastSeenUnitInfo はストアで管理するため、ここでは PlacedUnit のみ
   onHexClick?: (q: number, r: number, logicalX: number, logicalY: number, unitOnHex?: PlacedUnit, event?: React.MouseEvent<SVGGElement>) => void;
   selectedUnitInstanceId?: string | null;
   attackingPairs?: { visualId: string, attackerId: string, targetId: string, weaponType: 'HE' | 'AP' }[];
-  visibleEnemyInstanceIds?: Set<string>;
-  strategicPoints: StrategicPoint[]; // ★★★ この行を追加 ★★★
+  // visibleEnemyInstanceIds はストアから取得するため不要
+  strategicPoints: StrategicPoint[];
 }
 
 const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
@@ -34,31 +34,29 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
   onHexClick,
   selectedUnitInstanceId,
   attackingPairs = [],
-  visibleEnemyInstanceIds = new Set(), // デフォルト値を設定
-  strategicPoints, // propsとして受け取る
+  // visibleEnemyInstanceIds は props から削除
+  strategicPoints,
 }) => {
+  const { playerVisibilityMap, lastKnownEnemyPositions } = useGameSettingsStore(); // ストアから視界情報を取得
+
   if (!mapData) {
     return <div className="flex items-center justify-center h-full text-gray-400">Rendering Map...</div>;
   }
 
-  const { rows: logicalRows, cols: logicalCols, hexes: mapHexesData } = mapData; // hexes も取得
+  const { rows: logicalRows, cols: logicalCols, hexes: mapHexesData } = mapData;
   let minPxX = Infinity, maxPxX = -Infinity, minPxY = Infinity, maxPxY = -Infinity;
   const hexesToDraw: { q: number; r: number; logicalX: number; logicalY: number; center: { x: number; y: number }; corners: string, terrain: string }[] = [];
 
-  // mapHexesData がある場合のみヘックスを描画
   if (mapHexesData) {
     for (const key in mapHexesData) {
         const hexDef = mapHexesData[key];
         if (hexDef) {
             const { q, r, terrain } = hexDef;
-            const logical = axialToLogical(q, r); // アキシャルから論理座標へ
-
-            // マップの rows/cols を超えるものは描画しない (オプショナル: MapData.hexes が正確なら不要)
-            // if (logical.x < 0 || logical.x >= logicalCols || logical.y < 0 || logical.y >= logicalRows) continue;
+            const logical = axialToLogical(q, r);
 
             const center = hexToPixel(q, r, hexSize);
             const corners = getHexCorners(center.x, center.y, hexSize);
-            hexesToDraw.push({ q, r, logicalX: logical.x, logicalY: logical.y, center, corners, terrain: terrain }); // terrain情報も追加
+            hexesToDraw.push({ q, r, logicalX: logical.x, logicalY: logical.y, center, corners, terrain: terrain });
 
             const cornerPoints = corners.split(' ').map(pair => pair.split(',').map(Number));
             cornerPoints.forEach(point => {
@@ -79,16 +77,15 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
   const groupTranslateY = svgContentHeight > 0 ? -minPxY + svgPadding : hexSize;
 
   const getTerrainColor = (terrainType: string) => {
-    // types/map.ts の TERRAIN_COLORS のような定義を参照する
     switch (terrainType) {
-      case 'plains': return 'rgba(134, 239, 172, 0.3)'; // Light green
-      case 'forest': return 'rgba(34, 197, 94, 0.4)';  // Darker green
-      case 'hills': return 'rgba(203, 213, 225, 0.4)'; // Light gray
-      case 'road': return 'rgba(148, 163, 184, 0.5)';   // Gray
-      case 'city': return 'rgba(168, 162, 158, 0.5)';   // Stone gray
-      case 'water': return 'rgba(56, 189, 248, 0.4)';   // Blue
-      case 'mountain': return 'rgba(100, 116, 139, 0.6)';// Dark gray
-      case 'swamp': return 'rgba(82, 82, 91, 0.5)';     // Muddy
+      case 'plains': return 'rgba(134, 239, 172, 0.3)';
+      case 'forest': return 'rgba(34, 197, 94, 0.4)';
+      case 'hills': return 'rgba(203, 213, 225, 0.4)';
+      case 'road': return 'rgba(148, 163, 184, 0.5)';
+      case 'city': return 'rgba(168, 162, 158, 0.5)';
+      case 'water': return 'rgba(56, 189, 248, 0.4)';
+      case 'mountain': return 'rgba(100, 116, 139, 0.6)';
+      case 'swamp': return 'rgba(82, 82, 91, 0.5)';
       default: return 'rgba(107, 114, 128, 0.2)';
     }
   };
@@ -107,16 +104,23 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
           </defs>
           <g transform={`translate(${groupTranslateX}, ${groupTranslateY})`}>
             {hexesToDraw.map(({ q, r, logicalX, logicalY, center, corners, terrain }) => {
-              const hexKey = `${q}-${r}`;
-              // PlacedUnit と LastSeenUnitInfo の型を区別するために型ガードを使用
+              const hexKey = `${q},${r}`; // playerVisibilityMap のキーと一致させる
               const unitOnHex = placedUnits.find(
                 u => u.position.x === logicalX && u.position.y === logicalY && u.status !== 'destroyed'
-              ) as PlacedUnit | LastSeenUnitInfo | undefined; // キャストで型を明示
-
+              );
               const unitDef = unitOnHex ? UNITS_MAP.get(unitOnHex.unitId) : null;
 
+              // ユニットの視界判定
+              const isUnitVisible = unitOnHex && (unitOnHex.owner === 'player' || playerVisibilityMap[hexKey]);
+              // 最終確認位置の判定
+              const isLastSeenPosition = !isUnitVisible && lastKnownEnemyPositions[unitOnHex?.instanceId || ''] &&
+                                         lastKnownEnemyPositions[unitOnHex?.instanceId || ''].x === logicalX &&
+                                         lastKnownEnemyPositions[unitOnHex?.instanceId || ''].y === logicalY;
+
+
               let directionLine = null;
-              if (unitOnHex && unitOnHex.orientation !== undefined && unitDef) {
+              // ユニットが視界内にある場合のみ描画
+              if (unitOnHex && unitOnHex.orientation !== undefined && unitDef && isUnitVisible) {
                   const angleRad = unitOnHex.orientation * (Math.PI / 180);
                   const lineLength = hexSize * 0.45;
                   const x1 = center.x;
@@ -134,28 +138,22 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
                   );
               }
 
-              // visibleEnemyInstanceIds を使用して、現在視認できていない敵ユニットを半透明にする
-              const isActuallyVisible = unitOnHex && (unitOnHex.owner === 'player' || (visibleEnemyInstanceIds && visibleEnemyInstanceIds.has(unitOnHex.instanceId)));
-              // isLastSeen は (PlacedUnit | LastSeenUnitInfo) 型のプロパティなのでアクセス可能
-              const isMarkedAsLastSeen = unitOnHex && 'isLastSeen' in unitOnHex && unitOnHex.isLastSeen;
-
-
               return (
                 <g
                   key={hexKey}
-                  onClick={(event) => onHexClick?.(q, r, logicalX, logicalY, unitOnHex as PlacedUnit, event)} // unitOnHex を PlacedUnit にキャスト
-                  onContextMenu={(event) => onHexClick?.(q, r, logicalX, logicalY, unitOnHex as PlacedUnit, event)}
+                  onClick={(event) => onHexClick?.(q, r, logicalX, logicalY, unitOnHex, event)}
+                  onContextMenu={(event) => onHexClick?.(q, r, logicalX, logicalY, unitOnHex, event)}
                   className="cursor-pointer group"
                 >
                   <polygon
                     points={corners}
-                    fill={getTerrainColor(terrain)} // terrain を使用
+                    fill={getTerrainColor(terrain)}
                     stroke="rgba(55, 65, 81, 0.6)"
                     strokeWidth="1"
-                    className="group-hover:fill-opacity-50 transition-opacity" // fill-opacity は Tailwind にないので注意 (CSSで定義するか、opacityクラスを使う)
+                    className="group-hover:fill-opacity-50 transition-opacity"
                   />
-                  {unitOnHex && unitDef && (
-                    <g opacity={isMarkedAsLastSeen && !isActuallyVisible ? 0.4 : (unitOnHex.justHit ? 0.7 : 1)} >
+                  {unitOnHex && unitDef && isUnitVisible && ( // プレイヤーユニットは常に表示、敵ユニットは視界内のみ
+                    <g opacity={unitOnHex.justHit ? 0.7 : 1} >
                       <text
                         x={center.x}
                         y={center.y}
@@ -189,14 +187,31 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
                        )}
                     </g>
                   )}
+                  {/* 最終確認位置のマーカー (敵ユニットが最後に視認された位置) */}
+                  {isLastSeenPosition && (
+                    <circle
+                      cx={center.x}
+                      cy={center.y}
+                      r={hexSize * 0.1}
+                      fill="rgba(255, 255, 0, 0.5)" // 黄色で半透明のマーカー
+                      stroke="yellow"
+                      strokeWidth="1"
+                      pointerEvents="none"
+                    />
+                  )}
                 </g>
               );
             })}
 
             {/* 戦略拠点の描画 */}
-            {strategicPoints.map(sp => { // propsから受け取った strategicPoints を使用
-              const spAxial = logicalToAxial(sp.x, sp.y); // 戦略拠点の座標も論理座標と仮定
+            {strategicPoints.map(sp => {
+              const spAxial = logicalToAxial(sp.x, sp.y);
               const center = hexToPixel(spAxial.q, spAxial.r, hexSize);
+              const hexKey = `${spAxial.q},${spAxial.r}`;
+              const isVisible = playerVisibilityMap[hexKey]; // 戦略拠点も視界内にあるかチェック
+
+              if (!isVisible) return null; // 視界外の戦略拠点は描画しない
+
               let spColor = "grey";
               if (sp.owner === 'player') spColor = "blue";
               else if (sp.owner === 'enemy') spColor = "red";
@@ -217,7 +232,7 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
                     fill="white"
                     fontWeight="bold"
                   >
-                    {sp.name ? sp.name.substring(0,2).toUpperCase() : 'SP'} {/* name があれば表示 */}
+                    {sp.name ? sp.name.substring(0,2).toUpperCase() : 'SP'}
                   </text>
                   {sp.captureProgress !== undefined && sp.captureProgress > 0 && sp.captureProgress < 100 && (
                     <g>
@@ -241,20 +256,29 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
             {attackingPairs.map(pair => {
               const attacker = placedUnits.find(u => u.instanceId === pair.attackerId);
               const target = placedUnits.find(u => u.instanceId === pair.targetId);
+              // 攻撃エフェクトも視界内にある場合のみ描画
               if (attacker && target) {
                 const attackerAxial = logicalToAxial(attacker.position.x, attacker.position.y);
                 const targetAxial = logicalToAxial(target.position.x, target.position.y);
-                const attackerCenterPx = hexToPixel(attackerAxial.q, attackerAxial.r, hexSize);
-                const targetCenterPx = hexToPixel(targetAxial.q, targetAxial.r, hexSize);
-                const lineColor = pair.weaponType === 'AP' ? "rgba(255, 100, 100, 0.8)" : "rgba(255, 165, 0, 0.8)";
-                return (
-                  <line
-                    key={pair.visualId}
-                    x1={attackerCenterPx.x} y1={attackerCenterPx.y}
-                    x2={targetCenterPx.x} y2={targetCenterPx.y}
-                    stroke={lineColor} strokeWidth="3" strokeDasharray="4 2" pointerEvents="none"
-                  />
-                );
+                const attackerHexKey = `${attackerAxial.q},${attackerAxial.r}`;
+                const targetHexKey = `${targetAxial.q},${targetAxial.r}`;
+
+                const isAttackerVisible = playerVisibilityMap[attackerHexKey];
+                const isTargetVisible = playerVisibilityMap[targetHexKey];
+
+                if (isAttackerVisible && isTargetVisible) {
+                  const attackerCenterPx = hexToPixel(attackerAxial.q, attackerAxial.r, hexSize);
+                  const targetCenterPx = hexToPixel(targetAxial.q, targetAxial.r, hexSize);
+                  const lineColor = pair.weaponType === 'AP' ? "rgba(255, 100, 100, 0.8)" : "rgba(255, 165, 0, 0.8)";
+                  return (
+                    <line
+                      key={pair.visualId}
+                      x1={attackerCenterPx.x} y1={attackerCenterPx.y}
+                      x2={targetCenterPx.x} y2={targetCenterPx.y}
+                      stroke={lineColor} strokeWidth="3" strokeDasharray="4 2" pointerEvents="none"
+                    />
+                  );
+                }
               }
               return null;
             })}

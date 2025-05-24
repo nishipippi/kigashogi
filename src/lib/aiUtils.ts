@@ -162,45 +162,76 @@ export function decideCombatAIAction(
   allUnitsOnMap: PlacedUnit[],
   mapData: MapData | null
 ): AIAction | null {
-  if (aiUnit.status === 'moving' || aiUnit.status === 'turning' || aiUnit.status?.startsWith('reloading_') || aiUnit.status?.startsWith('attacking_')) {
-    // If already busy with a primary action, let it continue for a bit
-    // Exception: if current attack target is destroyed, or move target reached and no new order.
-    if(aiUnit.attackTargetInstanceId){
-        const currentTarget = allUnitsOnMap.find(u => u.instanceId === aiUnit.attackTargetInstanceId);
-        if(!currentTarget || currentTarget.status === 'destroyed'){
-            // Current target gone, need new decision
-        } else {
-            return null; // Continue current attack/reload cycle
-        }
-    } else if (aiUnit.status === 'moving' || aiUnit.status === 'turning') {
-        return null; // Continue moving/turning
-    }
-  }
-
-
-  // 1. Attack nearby enemies
+  // Check for immediate attack opportunities even if busy with other actions (like moving)
   const nearestEnemy = findNearestEnemy(aiUnit, allUnitsOnMap, mapData);
   if (nearestEnemy) {
     const distance = hexDistance(
       logicalToAxial(aiUnit.position.x, aiUnit.position.y).q, logicalToAxial(aiUnit.position.x, aiUnit.position.y).r,
-      logicalToAxial(nearestEnemy.position.x, nearestEnemy.position.y).q, logicalToAxial(nearestEnemy.position.x, nearestEnemy.position.y).r
+      logicalToAxial(nearestEnemy.position.x, nearestEnemy.position.y).q, logicalToAxial(nearestEnemy.position.y, nearestEnemy.position.y).r
     );
 
-    // Determine if AI can engage this target with any weapon
     let canEngageNow = false;
-    let weaponRange = 0;
+    const enemyDef = UNITS_MAP.get(nearestEnemy.unitId);
+    if (enemyDef) {
+      const enemyHasArmor = enemyDef.stats.armor.front > 0 || enemyDef.stats.armor.side > 0 || enemyDef.stats.armor.back > 0 || enemyDef.stats.armor.top > 0;
+      if (aiUnitDef.stats.apWeapon && enemyHasArmor && distance <= aiUnitDef.stats.apWeapon.range) {
+        canEngageNow = true;
+      }
+      if (!canEngageNow && aiUnitDef.stats.heWeapon && distance <= aiUnitDef.stats.heWeapon.range) {
+        canEngageNow = true;
+      }
+      // If still not engageable now, but has AP weapon and target is not armored (bad use of AP but AI might do it)
+      if (!canEngageNow && aiUnitDef.stats.apWeapon && distance <= aiUnitDef.stats.apWeapon.range) {
+        canEngageNow = true;
+      }
+    }
+
+    if (canEngageNow && mapData && hasLineOfSight(aiUnit, nearestEnemy, mapData, allUnitsOnMap)) {
+      // If an immediate attack is possible, prioritize it over current movement/reloading
+      if (aiUnit.status !== 'attacking_ap' && aiUnit.status !== 'attacking_he') { // Don't interrupt if already attacking
+        return { type: 'ATTACK', attackTargetInstanceId: nearestEnemy.instanceId, priority: 100 };
+      }
+    }
+  }
+
+  // If no immediate attack, or already attacking, then check other statuses
+  if (aiUnit.status === 'moving' || aiUnit.status === 'turning' || aiUnit.status?.startsWith('reloading_') || aiUnit.status?.startsWith('attacking_')) {
+    // If already busy with a primary action, let it continue for a bit
+    // Exception: if current attack target is destroyed, or move target reached and no new order.
+    if (aiUnit.attackTargetInstanceId) {
+      const currentTarget = allUnitsOnMap.find(u => u.instanceId === aiUnit.attackTargetInstanceId);
+      if (!currentTarget || currentTarget.status === 'destroyed') {
+        // Current target gone, need new decision (will fall through to find new target)
+      } else {
+        return null; // Continue current attack/reload cycle
+      }
+    } else if (aiUnit.status === 'moving' || aiUnit.status === 'turning') {
+      return null; // Continue moving/turning if no immediate attack opportunity found
+    }
+  }
+
+
+  // 1. Attack nearby enemies (re-evaluate after potential status check)
+  // This block is now for units that are idle or whose previous action was interrupted/completed
+  if (nearestEnemy) { // nearestEnemy is already found above
+    const distance = hexDistance(
+      logicalToAxial(aiUnit.position.x, aiUnit.position.y).q, logicalToAxial(aiUnit.position.x, aiUnit.position.y).r,
+      logicalToAxial(nearestEnemy.position.x, nearestEnemy.position.y).q, logicalToAxial(nearestEnemy.position.y, nearestEnemy.position.y).r
+    );
+
+    let canEngageNow = false;
     const enemyDef = UNITS_MAP.get(nearestEnemy.unitId);
     if (enemyDef) {
         const enemyHasArmor = enemyDef.stats.armor.front > 0 || enemyDef.stats.armor.side > 0 || enemyDef.stats.armor.back > 0 || enemyDef.stats.armor.top > 0;
         if (aiUnitDef.stats.apWeapon && enemyHasArmor && distance <= aiUnitDef.stats.apWeapon.range) {
-            canEngageNow = true; weaponRange = aiUnitDef.stats.apWeapon.range;
+            canEngageNow = true;
         }
-        if (!canEngageNow && aiUnitDef.stats.heWeapon && distance <= aiUnitDef.stats.heWeapon.range) { // Check HE if AP not chosen or not suitable
-            canEngageNow = true; weaponRange = aiUnitDef.stats.heWeapon.range;
+        if (!canEngageNow && aiUnitDef.stats.heWeapon && distance <= aiUnitDef.stats.heWeapon.range) {
+            canEngageNow = true;
         }
          // If still not engageable now, but has AP weapon and target is not armored (bad use of AP but AI might do it)
         if (!canEngageNow && aiUnitDef.stats.apWeapon && distance <= aiUnitDef.stats.apWeapon.range) {
-            canEngageNow = true; weaponRange = aiUnitDef.stats.apWeapon.range;
+            canEngageNow = true;
         }
     }
 
@@ -209,10 +240,6 @@ export function decideCombatAIAction(
       return { type: 'ATTACK', attackTargetInstanceId: nearestEnemy.instanceId, priority: 100 };
     } else if (nearestEnemy.status !== 'destroyed') {
       // Cannot attack now (out of range or no LoS), so move towards it.
-      // The "No path found" log suggests that moving directly to enemy's hex might be the issue
-      // if A* cannot path to an occupied hex.
-      // A better AI would path to an *adjacent* hex that allows attack.
-      // For now, we keep the simple "move to target" which gameplay loop will handle.
       return { type: 'MOVE', targetPosition: { x: nearestEnemy.position.x, y: nearestEnemy.position.y }, priority: 70 };
     }
   }
