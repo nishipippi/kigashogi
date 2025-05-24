@@ -286,16 +286,13 @@ function GameplayContent() {
         const currentTime = Date.now();
         let unitsToProcess = [...unitsFromStoreAtTickStart]; // 変更可能なコピーを作成
 
-        // ログ出力 (既存のログは残す)
-        console.log(`[Game Tick] Processing units. Total units in store: ${unitsToProcess.length}`);
+
         unitsToProcess.forEach(unit => {
             const unitDef = UNITS_MAP.get(unit.unitId);
-            console.log(`  Unit: ${unit.name} (${unit.instanceId.slice(-4)}), Owner: ${unit.owner}, HP: ${unit.currentHp}, Status: ${unit.status}, IsCommander: ${unitDef?.isCommander}`);
         });
 
         // 司令官の生存数を計算する前に、破壊されたユニットをフィルタリング
         let currentAliveUnits = unitsToProcess.filter(u => u.status !== 'destroyed');
-        console.log(`[Game Tick] Alive units after filter (before processing): ${currentAliveUnits.length}`);
 
         let playerCommandersAlive = 0;
         let enemyCommandersAlive = 0;
@@ -307,7 +304,6 @@ function GameplayContent() {
                 else if (unit.owner === 'enemy') enemyCommandersAlive++;
             }
         });
-        console.log(`[Game Tick] Player Commanders Alive: ${playerCommandersAlive}, Enemy Commanders Alive: ${enemyCommandersAlive}`);
 
         const playerUnits = currentAliveUnits.filter(u => u.owner === 'player'); // フィルタリングされたリストから取得
         const enemyUnitsActual = currentAliveUnits.filter(u => u.owner === 'enemy'); // フィルタリングされたリストから取得
@@ -574,10 +570,8 @@ function GameplayContent() {
 
                                     if (targetDef) {
                                         const damageResult = calculateDamage( unitDef, weaponChoice.type, targetDef, unit.orientation, targetUnit.orientation, targetUnit.position, unit.position );
-                                        console.log(`[Damage] ${unit.name} attacks ${targetUnit.name} with ${weaponChoice.type} for ${damageResult.damageDealt} damage.`);
                                         const newTargetHp = Math.max(0, targetUnit.currentHp - damageResult.damageDealt);
                                         if (newTargetHp <= 0) {
-                                            console.log(`[Damage] Unit ${targetUnit.name} (${targetUnit.instanceId.slice(-4)}) HP reached 0. Setting status to 'destroyed'. Owner: ${targetUnit.owner}, Current HP: ${targetUnit.currentHp}`);
                                             const targetUnitIndex = unitsToProcess.findIndex(u => u.instanceId === targetUnit.instanceId);
                                             if (targetUnitIndex !== -1) {
                                                 unitsToProcess[targetUnitIndex] = { ...targetUnit, currentHp: 0, status: 'destroyed' };
@@ -761,7 +755,6 @@ function GameplayContent() {
                     else if (unit.owner === 'enemy') finalEnemyCommandersAlive++;
                 }
             });
-            console.log(`[Game Tick] Final Player Commanders Alive: ${finalPlayerCommandersAlive}, Final Enemy Commanders Alive: ${finalEnemyCommandersAlive}`);
 
             if (finalPlayerCommandersAlive === 0) {
                 setGameOver("Enemy Wins! (Player Commander Lost)");
