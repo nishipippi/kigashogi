@@ -22,7 +22,7 @@ interface GameplayHexGridProps {
   placedUnits: (PlacedUnit | LastSeenUnitInfo)[]; // isLastSeen を考慮
   onHexClick?: (q: number, r: number, logicalX: number, logicalY: number, unitOnHex?: PlacedUnit, event?: React.MouseEvent<SVGGElement>) => void;
   selectedUnitInstanceId?: string | null;
-  attackingPairs?: { attackerId: string, targetId: string, weaponType: 'HE' | 'AP' }[];
+  attackingPairs?: { visualId: string, attackerId: string, targetId: string, weaponType: 'HE' | 'AP' }[];
   visibleEnemyInstanceIds?: Set<string>;
   strategicPoints: StrategicPoint[]; // ★★★ この行を追加 ★★★
 }
@@ -249,7 +249,7 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
                 const lineColor = pair.weaponType === 'AP' ? "rgba(255, 100, 100, 0.8)" : "rgba(255, 165, 0, 0.8)";
                 return (
                   <line
-                    key={`attack-${attacker.instanceId}-${target.instanceId}-${Date.now()}`} // よりユニークなキー
+                    key={pair.visualId}
                     x1={attackerCenterPx.x} y1={attackerCenterPx.y}
                     x2={targetCenterPx.x} y2={targetCenterPx.y}
                     stroke={lineColor} strokeWidth="3" strokeDasharray="4 2" pointerEvents="none"

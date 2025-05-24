@@ -60,7 +60,7 @@ export interface UnitStats {
 }
 
 // ユニットの静的データ定義
-export interface UnitData {
+export interface UnitData { // ★★★ このインターフェースの名前は typesUnitData ではなく UnitData が正しいです ★★★
   id: string; // ユニットの一意なID (例: "rifle_infantry", "mbt_alpha")
   name: string; // UIに表示されるユニット名
   icon: string; // UI表示用のアイコン (絵文字や短い文字列など)
@@ -76,6 +76,8 @@ export interface UnitData {
   tags?: UnitRoleTag[]; // ユニットの役割や特性を示すタグ (複数可)
 
   stats: UnitStats; // ユニットの性能値
+
+  canMoveAndAttack?: boolean; // ★★★ この行を追加 ★★★
 
   // prerequisites?: string[]; // 生産に必要な前提条件 (他のユニットや研究など、将来用)
   // specialAbilities?: { id: string, name: string, description: string }[]; // 特殊能力 (将来用)

@@ -6,13 +6,12 @@ import { UNITS_MAP, ALL_UNITS } from '@/gameData/units';
 import { hexDistance, logicalToAxial, axialToLogical, findPathAStar } from '@/lib/hexUtils';
 import { hasLineOfSight } from '@/lib/battleUtils'; // Assuming this is correctly implemented
 
-export interface AIAction {
-  type: 'PRODUCE' | 'MOVE' | 'ATTACK' | 'CAPTURE' | 'IDLE';
-  targetUnitId?: string; // For PRODUCE
-  targetPosition?: { x: number; y: number }; // For MOVE or CAPTURE
-  attackTargetInstanceId?: string; // For ATTACK
-  priority: number; // Higher is more important
-}
+export type AIAction =
+  | { type: 'PRODUCE'; unitIdToProduce: string; priority: number; }
+  | { type: 'MOVE'; targetPosition: { x: number; y: number }; priority: number; }
+  | { type: 'ATTACK'; attackTargetInstanceId: string; priority: number; }
+  | { type: 'CAPTURE'; targetPosition: { x: number; y: number }; priority: number; }
+  | { type: 'IDLE'; priority: number; };
 
 // Simple global build order for AI commander (can be expanded)
 const aiBuildOrder: string[] = [
@@ -103,14 +102,14 @@ export function decideCommanderAIAction(
       const unitToProduceDef = UNITS_MAP.get(unitToProduceId);
       if (unitToProduceDef && currentResources >= unitToProduceDef.cost) {
         globalAIBuildOrderIndex++;
-        return { type: 'PRODUCE', targetUnitId: unitToProduceId, priority: 90 };
+        return { type: 'PRODUCE', unitIdToProduce: unitToProduceId, priority: 90 };
       }
     } else {
       // Build order finished, maybe produce based on needs or fallback
       // For now, try to build rifle infantry if affordable
       const rifleDef = UNITS_MAP.get('rifle_infantry');
       if (rifleDef && currentResources >= rifleDef.cost) {
-        return { type: 'PRODUCE', targetUnitId: 'rifle_infantry', priority: 30 };
+        return { type: 'PRODUCE', unitIdToProduce: 'rifle_infantry', priority: 30 };
       }
     }
   }
