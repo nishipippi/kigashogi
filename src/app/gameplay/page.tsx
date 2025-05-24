@@ -766,13 +766,13 @@ function GameplayContent() {
         }
 
         if (!currentGameOverMsg) {
-            const anyPlayerUnitsExist = currentAliveUnits.some(u => u.owner === 'player');
-            const anyEnemyUnitsExist = currentAliveUnits.some(u => u.owner === 'enemy');
-            const playerCommanderDef = ALL_UNITS.find(u => u.isCommander);
-            
-            if (playerCommanderDef && anyPlayerUnitsExist && playerCommandersAlive === 0) {
+            // 司令官が破壊されたかどうかのチェック
+            // プレイヤーの司令官が全て破壊された場合
+            if (playerCommandersAlive === 0 && currentUnitsFromStore.some(u => u.owner === 'player' && UNITS_MAP.get(u.unitId)?.isCommander)) {
                 setGameOver("Enemy Wins! (Player Commander Lost)");
-            } else if (playerCommanderDef && anyEnemyUnitsExist && enemyCommandersAlive === 0) {
+            } 
+            // 敵の司令官が全て破壊された場合
+            else if (enemyCommandersAlive === 0 && currentUnitsFromStore.some(u => u.owner === 'enemy' && UNITS_MAP.get(u.unitId)?.isCommander)) {
                 setGameOver("Player Wins! (Enemy Commander Lost)");
             }
         }
