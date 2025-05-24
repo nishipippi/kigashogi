@@ -200,7 +200,8 @@ export function decideCombatAIAction(
     if (aiUnitDef.stats.apWeapon && distance <= aiUnitDef.stats.apWeapon.range && hasLoS) {
       if (enemyHasArmor) {
         // 敵が装甲を持つ場合、AP武器で攻撃
-        if (aiUnit.status !== 'attacking_ap' && aiUnit.status !== 'attacking_he') {
+        // ユニットが現在攻撃中ではない場合、または現在の攻撃ターゲットが異なる場合
+        if (aiUnit.attackTargetInstanceId !== nearestEnemy.instanceId || (aiUnit.status !== 'attacking_ap' && aiUnit.status !== 'attacking_he')) {
           return { type: 'ATTACK', attackTargetInstanceId: nearestEnemy.instanceId, priority: 100 };
         }
       }
@@ -211,15 +212,17 @@ export function decideCombatAIAction(
     if (aiUnitDef.stats.heWeapon && distance <= aiUnitDef.stats.heWeapon.range && hasLoS) {
       if (!enemyHasArmor) {
         // 敵が装甲を持たない場合、HE武器で攻撃
-        if (aiUnit.status !== 'attacking_ap' && aiUnit.status !== 'attacking_he') {
+        // ユニットが現在攻撃中ではない場合、または現在の攻撃ターゲットが異なる場合
+        if (aiUnit.attackTargetInstanceId !== nearestEnemy.instanceId || (aiUnit.status !== 'attacking_ap' && aiUnit.status !== 'attacking_he')) {
           return { type: 'ATTACK', attackTargetInstanceId: nearestEnemy.instanceId, priority: 95 };
         }
       }
     }
 
     // 3. プレイヤーのこれまでの指示(移動指示など)を継続
-    // 攻撃可能な敵がいるが、射程外またはLoSがない場合、
+    // 攻撃可能な敵が射程外またはLoSがない場合、
     // ユニットが移動中や旋回中であれば、現在の行動を継続する
+    // ここでは、攻撃機会がない場合にのみ、現在の行動を継続する
     if (aiUnit.status === 'moving' || aiUnit.status === 'turning' || aiUnit.status?.startsWith('reloading_') || aiUnit.status?.startsWith('attacking_')) {
         // 攻撃対象が破壊された場合のみ、新しい行動を決定する
         if (aiUnit.attackTargetInstanceId) {
@@ -227,15 +230,23 @@ export function decideCombatAIAction(
             if (!currentTarget || currentTarget.status === 'destroyed') {
                 // ターゲットが破壊されたので、新しい行動を決定するためにフォールスルー
             } else {
-                return null; // 現在の攻撃/リロードサイクルを継続
+                // ターゲットがまだ存在し、攻撃中またはリロード中であれば、現在の行動を継続
+                return null;
             }
         } else {
-            return null; // 移動中/旋回中であれば、攻撃機会がない限り継続
+            // 攻撃ターゲットがなく、移動中や旋回中であれば、現在の行動を継続
+            return null;
         }
     }
 
     // 攻撃可能な敵が射程外またはLoSがない場合、移動を試みる (優先度を低くする)
+    // この部分は、攻撃機会がない場合にのみ実行されるべき
     if (nearestEnemy.status !== 'destroyed' && (distance > (aiUnitDef.stats.apWeapon?.range || 0) && distance > (aiUnitDef.stats.heWeapon?.range || 0) || !hasLoS)) {
+      // ユニットが移動中であれば、移動を継続する（nullを返す）
+      if (aiUnit.status === 'moving' || aiUnit.status === 'turning') {
+        return null;
+      }
+      // それ以外の場合は、敵に向かって移動を試みる
       return { type: 'MOVE', targetPosition: { x: nearestEnemy.position.x, y: nearestEnemy.position.y }, priority: 70 };
     }
   }
@@ -243,6 +254,22 @@ export function decideCombatAIAction(
   // If no immediate attack opportunity found, and not already busy with an action,
   // then proceed to capture strategic points or idle.
   // This block is now outside the nearestEnemy check, ensuring it only runs if no immediate combat action is taken.
+
+  // ユニットが移動中や旋回中であれば、攻撃機会がない限り継続
+  if (aiUnit.status === 'moving' || aiUnit.status === 'turning' || aiUnit.status?.startsWith('reloading_') || aiUnit.status?.startsWith('attacking_')) {
+      // 攻撃対象が破壊された場合のみ、新しい行動を決定する
+      if (aiUnit.attackTargetInstanceId) {
+          const currentTarget = allUnitsOnMap.find(u => u.instanceId === aiUnit.attackTargetInstanceId);
+          if (!currentTarget || currentTarget.status === 'destroyed') {
+              // ターゲットが破壊されたので、新しい行動を決定するためにフォールスルー
+          } else {
+              return null; // 現在の攻撃/リロードサイクルを継続
+          }
+      } else {
+          return null; // 移動中/旋回中であれば、攻撃機会がない限り継続
+      }
+  }
+
 
   // 2. Capture strategic points (if not in combat)
   // Only non-commander combat units will try to capture for now

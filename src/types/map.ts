@@ -11,6 +11,11 @@ export interface HexData {
   // height?: number; // 将来的な高さの概念
 }
 
+export interface SelectedHexInfo extends HexData {
+  logicalX: number;
+  logicalY: number;
+}
+
 export interface StrategicPoint {
   id: string;
   x: number;  // 論理X座標
