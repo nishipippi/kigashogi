@@ -3,11 +3,22 @@
 
 "use client";
 
-import React from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { MapData, StrategicPoint, HexData, TerrainType } from '@/types/map';
 import { useGameSettingsStore, type PlacedUnit } from '@/stores/gameSettingsStore'; // ストアをインポート
 import { getHexCorners, hexToPixel, logicalToAxial, axialToLogical, getHexWidth, getHexHeight } from '@/lib/hexUtils';
 import { UNITS_MAP } from '@/gameData/units';
+
+interface BulletEffect {
+  id: string;
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+  weaponType: 'HE' | 'AP';
+  startTime: number;
+  duration: number; // ms
+}
 
 // LastSeenUnitInfo はストアで管理するため、ここでは不要
 // interface LastSeenUnitInfo extends PlacedUnit {
@@ -34,10 +45,88 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
   onHexClick,
   selectedUnitInstanceId,
   attackingPairs = [],
-  // visibleEnemyInstanceIds は props から削除
   strategicPoints,
 }) => {
   const { playerVisibilityMap, lastKnownEnemyPositions } = useGameSettingsStore(); // ストアから視界情報を取得
+  const [bulletEffects, setBulletEffects] = useState<BulletEffect[]>([]);
+  const animationFrameId = useRef<number | null>(null);
+
+  // attackingPairs の変更を監視し、新しいエフェクトを追加
+  useEffect(() => {
+    console.log("attackingPairs updated:", attackingPairs);
+    if (attackingPairs.length > 0) {
+      const newEffects: BulletEffect[] = [];
+      attackingPairs.forEach(pair => {
+        const attacker = placedUnits.find(u => u.instanceId === pair.attackerId);
+        const target = placedUnits.find(u => u.instanceId === pair.targetId);
+
+        if (attacker && target) {
+          const attackerAxial = logicalToAxial(attacker.position.x, attacker.position.y);
+          const targetAxial = logicalToAxial(target.position.x, target.position.y);
+
+          const attackerCenterPx = hexToPixel(attackerAxial.q, attackerAxial.r, hexSize);
+          const targetCenterPx = hexToPixel(targetAxial.q, targetAxial.r, hexSize);
+
+          // 既に存在するエフェクトかチェック (visualIdで判定)
+          const existingEffect = bulletEffects.find(effect => effect.id === pair.visualId);
+          if (!existingEffect) {
+            console.log(`Adding new bullet effect: ${pair.visualId}`);
+            newEffects.push({
+              id: pair.visualId,
+              startX: attackerCenterPx.x,
+              startY: attackerCenterPx.y,
+              endX: targetCenterPx.x,
+              endY: targetCenterPx.y,
+              weaponType: pair.weaponType,
+              startTime: performance.now(),
+              duration: 300, // 弾のアニメーション時間 (ms)
+            });
+          }
+        }
+      });
+      setBulletEffects(prevEffects => [...prevEffects, ...newEffects]);
+    }
+  }, [attackingPairs, placedUnits, hexSize]); // bulletEffects を依存配列から削除
+
+  // アニメーションループ
+  const animateBullets = useCallback(() => {
+    setBulletEffects(prevEffects => {
+      const now = performance.now();
+      const updatedEffects = prevEffects.map(effect => {
+        const elapsed = now - effect.startTime;
+        const progress = Math.min(elapsed / effect.duration, 1); // 0から1にクランプ
+
+        if (progress >= 1) {
+          console.log(`Bullet effect finished: ${effect.id}`);
+          return null; // アニメーション終了
+        }
+
+        return { ...effect }; // 位置は描画時に計算
+      }).filter(effect => effect !== null) as BulletEffect[];
+
+      if (updatedEffects.length > 0) {
+        animationFrameId.current = requestAnimationFrame(animateBullets);
+      } else {
+        animationFrameId.current = null;
+      }
+      return updatedEffects;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (bulletEffects.length > 0 && animationFrameId.current === null) {
+      console.log("Starting bullet animation loop.");
+      animationFrameId.current = requestAnimationFrame(animateBullets);
+    }
+
+    return () => {
+      if (animationFrameId.current) {
+        console.log("Cleaning up bullet animation loop.");
+        cancelAnimationFrame(animationFrameId.current);
+        animationFrameId.current = null;
+      }
+    };
+  }, [bulletEffects, animateBullets]);
 
   if (!mapData) {
     return <div className="flex items-center justify-center h-full text-gray-400">Rendering Map...</div>;
@@ -248,35 +337,31 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
               );
             })}
 
-            {/* 攻撃エフェクトの描画 */}
-            {attackingPairs.map(pair => {
-              const attacker = placedUnits.find(u => u.instanceId === pair.attackerId);
-              const target = placedUnits.find(u => u.instanceId === pair.targetId);
-              // 攻撃エフェクトも視界内にある場合のみ描画
-              if (attacker && target) {
-                const attackerAxial = logicalToAxial(attacker.position.x, attacker.position.y);
-                const targetAxial = logicalToAxial(target.position.x, target.position.y);
-                const attackerHexKey = `${attackerAxial.q},${attackerAxial.r}`;
-                const targetHexKey = `${targetAxial.q},${targetAxial.r}`;
+            {/* 弾のエフェクトの描画 */}
+            {bulletEffects.map(effect => {
+              const now = performance.now();
+              const elapsed = now - effect.startTime;
+              const progress = Math.min(elapsed / effect.duration, 1);
 
-                const isAttackerVisible = playerVisibilityMap[attackerHexKey];
-                const isTargetVisible = playerVisibilityMap[targetHexKey];
+              // 弾の現在位置を補間
+              const currentX = effect.startX + (effect.endX - effect.startX) * progress;
+              const currentY = effect.startY + (effect.endY - effect.startY) * progress;
 
-                if (isAttackerVisible && isTargetVisible) {
-                  const attackerCenterPx = hexToPixel(attackerAxial.q, attackerAxial.r, hexSize);
-                  const targetCenterPx = hexToPixel(targetAxial.q, targetAxial.r, hexSize);
-                  const lineColor = pair.weaponType === 'AP' ? "rgba(255, 100, 100, 0.8)" : "rgba(255, 165, 0, 0.8)";
-                  return (
-                    <line
-                      key={pair.visualId}
-                      x1={attackerCenterPx.x} y1={attackerCenterPx.y}
-                      x2={targetCenterPx.x} y2={targetCenterPx.y}
-                      stroke={lineColor} strokeWidth="3" strokeDasharray="4 2" pointerEvents="none"
-                    />
-                  );
-                }
-              }
-              return null;
+              const bulletColor = effect.weaponType === 'AP' ? "rgb(255, 200, 0)" : "rgb(255, 0, 0)"; // APは黄色、HEは赤
+
+              console.log(`Drawing bullet ${effect.id} at (${currentX}, ${currentY}) with progress ${progress}`);
+
+              return (
+                <circle
+                  key={effect.id}
+                  cx={currentX}
+                  cy={currentY}
+                  r={hexSize * 0.1} // 弾のサイズ
+                  fill={bulletColor}
+                  opacity={1 - progress} // 進行とともに透明度を上げる
+                  pointerEvents="none"
+                />
+              );
             })}
           </g>
         </svg>
