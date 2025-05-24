@@ -270,35 +270,47 @@ function GameplayContent() {
 
   useEffect(() => {
     const unitProcessInterval = setInterval(() => {
-        const { 
-          gameOverMessage: currentGameOverMsg, 
-          allUnitsOnMap: currentUnitsFromStore, 
-          currentMapDataState: currentMapDataForLoop, 
-          playerVisibilityMap: currentStoreVisibilityMap, // ストアから現在のマップを取得
-          lastKnownEnemyPositions: currentStoreLastKnownEnemyPositions, // ストアから現在の最終確認位置を取得
+        const {
+          gameOverMessage: currentGameOverMsg,
+          allUnitsOnMap: unitsFromStoreAtTickStart, // ティック開始時のユニットリスト
+          currentMapDataState: currentMapDataForLoop,
+          playerVisibilityMap: currentStoreVisibilityMap,
+          lastKnownEnemyPositions: currentStoreLastKnownEnemyPositions,
         } = useGameSettingsStore.getState();
 
-        if (currentGameOverMsg) { 
-          clearInterval(unitProcessInterval); 
-          return; 
+        if (currentGameOverMsg) {
+          clearInterval(unitProcessInterval);
+          return;
         }
 
         const currentTime = Date.now();
-        const currentAliveUnits = currentUnitsFromStore.filter(u => u.status !== 'destroyed');
+        let unitsToProcess = [...unitsFromStoreAtTickStart]; // 変更可能なコピーを作成
+
+        // ログ出力 (既存のログは残す)
+        console.log(`[Game Tick] Processing units. Total units in store: ${unitsToProcess.length}`);
+        unitsToProcess.forEach(unit => {
+            const unitDef = UNITS_MAP.get(unit.unitId);
+            console.log(`  Unit: ${unit.name} (${unit.instanceId.slice(-4)}), Owner: ${unit.owner}, HP: ${unit.currentHp}, Status: ${unit.status}, IsCommander: ${unitDef?.isCommander}`);
+        });
+
+        // 司令官の生存数を計算する前に、破壊されたユニットをフィルタリング
+        let currentAliveUnits = unitsToProcess.filter(u => u.status !== 'destroyed');
+        console.log(`[Game Tick] Alive units after filter (before processing): ${currentAliveUnits.length}`);
 
         let playerCommandersAlive = 0;
         let enemyCommandersAlive = 0;
 
-        currentAliveUnits.forEach(unit => {
+        currentAliveUnits.forEach(unit => { // フィルタリングされたリストに対して計算
             const unitDef = UNITS_MAP.get(unit.unitId);
             if (unitDef?.isCommander) {
                 if (unit.owner === 'player') playerCommandersAlive++;
                 else if (unit.owner === 'enemy') enemyCommandersAlive++;
             }
         });
+        console.log(`[Game Tick] Player Commanders Alive: ${playerCommandersAlive}, Enemy Commanders Alive: ${enemyCommandersAlive}`);
 
-        const playerUnits = currentAliveUnits.filter(u => u.owner === 'player');
-        const enemyUnitsActual = currentAliveUnits.filter(u => u.owner === 'enemy');
+        const playerUnits = currentAliveUnits.filter(u => u.owner === 'player'); // フィルタリングされたリストから取得
+        const enemyUnitsActual = currentAliveUnits.filter(u => u.owner === 'enemy'); // フィルタリングされたリストから取得
         
         const newPlayerVisibilityMap: Record<string, boolean> = {};
         const newLastKnownEnemyPositions: Record<string, { x: number; y: number; timestamp: number }> = { ...currentStoreLastKnownEnemyPositions };
@@ -306,7 +318,7 @@ function GameplayContent() {
         enemyUnitsActual.forEach(enemyUnit => {
             let isVisible = false;
             for (const playerUnit of playerUnits) {
-                if (canObserveTarget(playerUnit, enemyUnit, currentMapDataForLoop, currentUnitsFromStore, currentTime)) {
+                if (canObserveTarget(playerUnit, enemyUnit, currentMapDataForLoop, unitsToProcess, currentTime)) { // unitsToProcess を使用
                     isVisible = true;
                     break;
                 }
@@ -314,13 +326,10 @@ function GameplayContent() {
             if (isVisible) {
                 const enemyAxial = logicalToAxial(enemyUnit.position.x, enemyUnit.position.y);
                 newPlayerVisibilityMap[`${enemyAxial.q},${enemyAxial.r}`] = true;
-                // 敵ユニット自体が視界内なので、最終確認位置からは削除
                 if (newLastKnownEnemyPositions[enemyUnit.instanceId]) {
                     delete newLastKnownEnemyPositions[enemyUnit.instanceId];
                 }
             } else {
-                // 視界外になった場合、最終確認位置を更新
-                // ただし、既に最終確認位置に登録されている場合は、タイムスタンプを更新しない（最後に視認された時間を保持するため）
                 if (!newLastKnownEnemyPositions[enemyUnit.instanceId]) {
                     newLastKnownEnemyPositions[enemyUnit.instanceId] = {
                         x: enemyUnit.position.x,
@@ -331,7 +340,6 @@ function GameplayContent() {
             }
         });
 
-        // 古い最終確認位置を削除
         for (const instanceId in newLastKnownEnemyPositions) {
             if (currentTime - newLastKnownEnemyPositions[instanceId].timestamp > LAST_SEEN_DURATION) {
                 delete newLastKnownEnemyPositions[instanceId];
@@ -342,59 +350,50 @@ function GameplayContent() {
         useGameSettingsStore.setState({ lastKnownEnemyPositions: newLastKnownEnemyPositions });
 
 
-        currentUnitsFromStore.forEach(unit => {
+        unitsToProcess.forEach((unit, index) => { // unitsToProcess をループ
             if (!unit || unit.status === 'destroyed') return;
             const unitDef = UNITS_MAP.get(unit.unitId);
             if (!unitDef) return;
 
-            if (unitDef.isCommander) {
-                if (unit.owner === 'player') playerCommandersAlive++;
-                else if (unit.owner === 'enemy') enemyCommandersAlive++;
-            }
-
             if (unit.justHit && unit.hitTimestamp && currentTime - unit.hitTimestamp > 300) {
-                updateUnitOnMap(unit.instanceId, { justHit: false });
+                unitsToProcess[index] = { ...unit, justHit: false };
             }
 
-            // AUTOMATIC TARGET ACQUISITION AND ENGAGEMENT for Player Units
-            // プレイヤーユニットが移動中または停止中に、射程内に敵が検出された場合は、停止して攻撃する
             if (unit.owner === 'player' && (unit.status === 'idle' || unit.status === 'moving') && !unit.attackTargetInstanceId && !unit.isTurning) {
                 if (unitDef) {
                     let potentialTarget: PlacedUnit | null = null;
                     let weaponTypeToUse: 'AP' | 'HE' | null = null;
                     const unitAxial = logicalToAxial(unit.position.x, unit.position.y);
 
-                    // 1. 周囲の敵をAP攻撃可能か検証 (可能なら停止して交戦)
                     if (unitDef.stats.apWeapon) {
-                        for (const otherUnit of currentUnitsFromStore) {
+                        for (const otherUnit of unitsToProcess) { // unitsToProcess を使用
                             if (otherUnit.owner === 'enemy' && otherUnit.status !== 'destroyed') {
                                 const otherUnitAxial = logicalToAxial(otherUnit.position.x, otherUnit.position.y);
                                 const distance = hexDistance(unitAxial.q, unitAxial.r, otherUnitAxial.q, otherUnitAxial.r);
                                 const targetDef = UNITS_MAP.get(otherUnit.unitId);
                                 const targetHasArmor = targetDef ? (targetDef.stats.armor.front > 0 || targetDef.stats.armor.side > 0 || targetDef.stats.armor.back > 0 || targetDef.stats.armor.top > 0) : false;
 
-                                if (distance <= unitDef.stats.apWeapon.range && targetHasArmor && currentMapDataForLoop && hasLineOfSight(unit, otherUnit, currentMapDataForLoop, currentUnitsFromStore)) {
+                                if (distance <= unitDef.stats.apWeapon.range && targetHasArmor && currentMapDataForLoop && hasLineOfSight(unit, otherUnit, currentMapDataForLoop, unitsToProcess)) { // unitsToProcess を使用
                                     potentialTarget = otherUnit;
                                     weaponTypeToUse = 'AP';
-                                    break; // AP攻撃可能な敵が見つかったら、それ以上探さない
+                                    break;
                                 }
                             }
                         }
                     }
 
-                    // 2. AP攻撃可能な敵がいない場合、HE攻撃可能か検証 (可能なら停止して交戦)
                     if (!potentialTarget && unitDef.stats.heWeapon) {
-                        for (const otherUnit of currentUnitsFromStore) {
+                        for (const otherUnit of unitsToProcess) { // unitsToProcess を使用
                             if (otherUnit.owner === 'enemy' && otherUnit.status !== 'destroyed') {
                                 const otherUnitAxial = logicalToAxial(otherUnit.position.x, otherUnit.position.y);
                                 const distance = hexDistance(unitAxial.q, unitAxial.r, otherUnitAxial.q, otherUnitAxial.r);
                                 const targetDef = UNITS_MAP.get(otherUnit.unitId);
                                 const targetHasArmor = targetDef ? (targetDef.stats.armor.front > 0 || targetDef.stats.armor.side > 0 || targetDef.stats.armor.back > 0 || targetDef.stats.armor.top > 0) : false;
 
-                                if (distance <= unitDef.stats.heWeapon.range && !targetHasArmor && currentMapDataForLoop && hasLineOfSight(unit, otherUnit, currentMapDataForLoop, currentUnitsFromStore)) {
+                                if (distance <= unitDef.stats.heWeapon.range && !targetHasArmor && currentMapDataForLoop && hasLineOfSight(unit, otherUnit, currentMapDataForLoop, unitsToProcess)) { // unitsToProcess を使用
                                     potentialTarget = otherUnit;
                                     weaponTypeToUse = 'HE';
-                                    break; // HE攻撃可能な敵が見つかったら、それ以上探さない
+                                    break;
                                 }
                             }
                         }
@@ -410,15 +409,16 @@ function GameplayContent() {
                         }
                         const needsToTurnForAttack = Math.abs(newTargetOrientationDeg - unit.orientation) > 1 && !!unitDef.stats.turnSpeed;
 
-                        updateUnitOnMap(unit.instanceId, {
+                        unitsToProcess[index] = {
+                            ...unit,
                             attackTargetInstanceId: target.instanceId,
                             status: needsToTurnForAttack ? 'turning' : 'aiming',
-                            isMoving: false, // 停止して攻撃
-                            currentPath: null, // パスをクリア
-                            moveTargetPosition: null, // 移動ターゲットをクリア
+                            isMoving: false,
+                            currentPath: null,
+                            moveTargetPosition: null,
                             targetOrientation: newTargetOrientationDeg,
                             isTurning: needsToTurnForAttack,
-                        });
+                        };
                     }
                 }
             }
@@ -429,7 +429,7 @@ function GameplayContent() {
                 let currentOrientation = unit.orientation; const targetOrientation = unit.targetOrientation;
                 let diff = targetOrientation - currentOrientation; if (diff > 180) diff -= 360; if (diff < -180) diff += 360;
                 
-                if (Math.abs(diff) < turnSpeedDegPerTick || Math.abs(diff) < 0.5) { // Turn complete
+                if (Math.abs(diff) < turnSpeedDegPerTick || Math.abs(diff) < 0.5) {
                     const newOrientation = targetOrientation;
                     let timeToNextStep: number | null = null;
                     if (unit.currentPath && unit.currentPath.length > 0) {
@@ -438,22 +438,23 @@ function GameplayContent() {
                     }
                     const canMoveAfterTurn = !!unit.moveTargetPosition && !!unit.currentPath && unit.currentPath.length > 0 && timeToNextStep !== Infinity;
                     
-                    updateUnitOnMap(unit.instanceId, {
+                    unitsToProcess[index] = {
+                        ...unit,
                         orientation: newOrientation, 
                         isTurning: false,
-                        isMoving: canMoveAfterTurn, // Only set isMoving if path is still valid
+                        isMoving: canMoveAfterTurn,
                         timeToNextHex: canMoveAfterTurn ? timeToNextStep : null,
                         targetOrientation: undefined,
                         status: canMoveAfterTurn ? 'moving' : (unit.attackTargetInstanceId ? 'aiming' : 'idle'),
-                    });
+                    };
                 } else {
                     const newOrientation = (currentOrientation + Math.sign(diff) * turnSpeedDegPerTick + 360) % 360;
-                    updateUnitOnMap(unit.instanceId, { orientation: newOrientation });
+                    unitsToProcess[index] = { ...unit, orientation: newOrientation };
                 }
             }
             else if (unit.isMoving && unit.currentPath && unit.currentPath.length > 0 && unit.timeToNextHex !== null && unit.timeToNextHex !== undefined) {
                 let newTimeToNextHex = unit.timeToNextHex - gameTickRate;
-                if (newTimeToNextHex <= 0) { // Hex move complete
+                if (newTimeToNextHex <= 0) {
                     const nextLogicalPosition = unit.currentPath[0];
                     const remainingPath = unit.currentPath.slice(1);
                     let newOrientation = unit.orientation;
@@ -473,90 +474,74 @@ function GameplayContent() {
                         needsToTurnAfterMove = Math.abs(newOrientation - unit.orientation) > 1 && unitDef.stats.turnSpeed !== undefined && unitDef.stats.turnSpeed > 0;
                         const canContinueMoving = !needsToTurnAfterMove && timeToNextStep !== Infinity;
 
-                        updateUnitOnMap(unit.instanceId, {
+                        unitsToProcess[index] = {
+                            ...unit,
                             position: nextLogicalPosition,
-                            orientation: needsToTurnAfterMove ? unit.orientation : newOrientation, // Keep current orientation if turning
+                            orientation: needsToTurnAfterMove ? unit.orientation : newOrientation,
                             currentPath: remainingPath,
                             timeToNextHex: canContinueMoving ? timeToNextStep : null,
                             isMoving: canContinueMoving,
                             isTurning: needsToTurnAfterMove,
                             targetOrientation: needsToTurnAfterMove ? newOrientation : undefined,
-                            status: needsToTurnAfterMove ? 'turning' : (canContinueMoving ? 'moving' : 'idle'), // Idle if cannot continue
-                        });
-                    } else { // Reached final destination of current path
-                        updateUnitOnMap(unit.instanceId, {
+                            status: needsToTurnAfterMove ? 'turning' : (canContinueMoving ? 'moving' : 'idle'),
+                        };
+                    } else {
+                        unitsToProcess[index] = {
+                            ...unit,
                             position: nextLogicalPosition,
                             currentPath: null, timeToNextHex: null,
                             isMoving: false, isTurning: false, moveTargetPosition: null, 
                             status: unit.attackTargetInstanceId ? 'aiming' : 'idle', 
-                        });
+                        };
                     }
-                } else { // Still moving towards next hex in path
-                    updateUnitOnMap(unit.instanceId, { timeToNextHex: newTimeToNextHex });
+                } else {
+                    unitsToProcess[index] = { ...unit, timeToNextHex: newTimeToNextHex };
                 }
             }
-            // STRATEGIC POINT CAPTURE LOGIC
-            // This should apply if unit is on a strategic point and is in a state that allows capturing (e.g., idle, or moving slowly over it)
-            // We will check this regardless of moving/turning, but only if not actively attacking or being destroyed.
             if (currentMapDataForLoop?.strategicPoints && 
-                (unit.status === 'idle' || unit.status === 'moving') && // Allow capture while moving over or idle on point
-                !unit.isTurning && // Typically units don't capture while turning
-                (!unit.attackTargetInstanceId) // Not actively in attack animation
+                (unit.status === 'idle' || unit.status === 'moving') &&
+                !unit.isTurning &&
+                (!unit.attackTargetInstanceId)
             ) {
                 const strategicPoint = currentMapDataForLoop.strategicPoints.find(sp => sp.x === unit.position.x && sp.y === unit.position.y);
                 if (strategicPoint) {
-                    if (strategicPoint.owner !== unit.owner) { // If point is not already owned by unit's owner
+                    if (strategicPoint.owner !== unit.owner) {
                         if (strategicPoint.capturingPlayer === unit.owner && strategicPoint.captureProgress !== undefined) {
-                            // Unit is continuing to capture
                             const newProgress = strategicPoint.captureProgress + gameTickRate;
                             if (newProgress >= BASE_CAPTURE_DURATION_MS) {
                                 updateStrategicPointState(strategicPoint.id, { owner: unit.owner, captureProgress: 0, capturingPlayer: null });
-                                // console.log(`Strategic point ${strategicPoint.name} captured by ${unit.owner}`);
                             } else {
                                 updateStrategicPointState(strategicPoint.id, { captureProgress: newProgress });
                             }
                         } else if (strategicPoint.capturingPlayer && strategicPoint.capturingPlayer !== unit.owner && strategicPoint.captureProgress && strategicPoint.captureProgress > 0) {
-                            // Point was being captured by opponent, neutralize first
-                            const newProgress = Math.max(0, strategicPoint.captureProgress - gameTickRate * 2); // Neutralize faster
+                            const newProgress = Math.max(0, strategicPoint.captureProgress - gameTickRate * 2);
                             updateStrategicPointState(strategicPoint.id, { 
                                 captureProgress: newProgress, 
-                                capturingPlayer: newProgress > 0 ? strategicPoint.capturingPlayer : null // Clear capturer if neutralized
+                                capturingPlayer: newProgress > 0 ? strategicPoint.capturingPlayer : null
                             });
                         } else if (!strategicPoint.capturingPlayer || strategicPoint.captureProgress === 0) {
-                            // Start capturing (or restart if it was opponent's and now neutralized)
                             updateStrategicPointState(strategicPoint.id, { capturingPlayer: unit.owner, captureProgress: gameTickRate });
                         }
                     }
-                } else { // Unit is not on a strategic point, check if it was capturing one and moved off
-                    const previouslyCapturingPoint = currentMapDataForLoop.strategicPoints.find(sp => sp.capturingPlayer === unit.owner && sp.id !== unit.instanceId); // A bit of a loose check by id, instanceId is better
-                    if (previouslyCapturingPoint && previouslyCapturingPoint.owner !== unit.owner) {
-                        // Reset capture progress if unit moved off
-                        // updateStrategicPointState(previouslyCapturingPoint.id, { capturingPlayer: null, captureProgress: 0 });
-                        // This part might be too aggressive if multiple units can capture.
-                        // Better to handle "stop capturing" if ALL units of that owner leave the point.
-                        // For simplicity, we only update if the current unit *is* on a point.
-                    }
+                } else {
                 }
             }
             else if (unit.attackTargetInstanceId && (unit.status === 'aiming' || unit.status === 'attacking_he' || unit.status === 'attacking_ap' || unit.status === 'reloading_he' || unit.status === 'reloading_ap')) {
-                if (unit.isTurning || unit.isMoving && !unitDef.canMoveAndAttack) { /* Allow attacking while turning/moving if capable */ } // If turning or moving (and cannot move&attack), skip attack logic for this tick
+                if (unit.isTurning || unit.isMoving && !unitDef.canMoveAndAttack) { }
                 else {
-                    const targetUnit = currentUnitsFromStore.find(u => u.instanceId === unit.attackTargetInstanceId && u.status !== 'destroyed');
+                    const targetUnit = unitsToProcess.find(u => u.instanceId === unit.attackTargetInstanceId && u.status !== 'destroyed'); // unitsToProcess を使用
                     if (!targetUnit) { 
-                        updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null, lastAttackTimeAP: undefined, lastAttackTimeHE: undefined }); 
-                        // return; // Removed to allow other logic like production to run
+                        unitsToProcess[index] = { ...unit, status: 'idle', attackTargetInstanceId: null, lastAttackTimeAP: undefined, lastAttackTimeHE: undefined };
                     } else {
                         const dx = targetUnit.position.x - unit.position.x; const dy = targetUnit.position.y - unit.position.y;
                         let requiredOrientationDeg = unit.orientation;
                         if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) { requiredOrientationDeg = (Math.atan2(dy, dx) * (180 / Math.PI) + 360) % 360; }
 
-                        if (Math.abs(requiredOrientationDeg - unit.orientation) > 5 && !unit.isTurning) { // If not already turning towards target
-                            updateUnitOnMap(unit.instanceId, { targetOrientation: requiredOrientationDeg, isTurning: true, status: 'aiming' });
-                            // return; // Removed
-                        } else if (!unit.isTurning && !hasLineOfSight(unit, targetUnit, currentMapDataForLoop, currentUnitsFromStore)) {
-                            updateUnitOnMap(unit.instanceId, { status: 'aiming' }); // Keep aiming, LoS might clear
-                            // return; // Removed
-                        } else if (!unit.isTurning) { // Is facing target and has LoS (or LoS check passed/not applicable)
+                        if (Math.abs(requiredOrientationDeg - unit.orientation) > 5 && !unit.isTurning) {
+                            unitsToProcess[index] = { ...unit, targetOrientation: requiredOrientationDeg, isTurning: true, status: 'aiming' };
+                        } else if (!unit.isTurning && !hasLineOfSight(unit, targetUnit, currentMapDataForLoop, unitsToProcess)) { // unitsToProcess を使用
+                            unitsToProcess[index] = { ...unit, status: 'aiming' };
+                        } else if (!unit.isTurning) {
                             const attackerPosAxial = logicalToAxial(unit.position.x, unit.position.y);
                             const targetPosAxial = logicalToAxial(targetUnit.position.x, targetUnit.position.y);
                             const distance = hexDistance(attackerPosAxial.q, attackerPosAxial.r, targetPosAxial.q, targetPosAxial.r);
@@ -567,12 +552,10 @@ function GameplayContent() {
                                 const targetHasArmor = targetDef.stats.armor.front > 0 || targetDef.stats.armor.side > 0 || targetDef.stats.armor.back > 0 || targetDef.stats.armor.top > 0;
 
                                 if (targetHasArmor) {
-                                    // 装甲を持つターゲットにはAP武器のみ考慮
                                     if (unitDef.stats.apWeapon && distance <= unitDef.stats.apWeapon.range) {
                                         weaponChoice = { type: 'AP', stats: unitDef.stats.apWeapon };
                                     }
                                 } else {
-                                    // 装甲を持たないターゲットにはHE武器のみ考慮
                                     if (unitDef.stats.heWeapon && distance <= unitDef.stats.heWeapon.range) {
                                         weaponChoice = { type: 'HE', stats: unitDef.stats.heWeapon };
                                     }
@@ -580,8 +563,7 @@ function GameplayContent() {
                             }
 
                             if (!weaponChoice) { 
-                                updateUnitOnMap(unit.instanceId, { status: 'aiming' }); // Cannot use any weapon, keep aiming
-                                // return; // Removed
+                                unitsToProcess[index] = { ...unit, status: 'aiming' };
                             } else {
                                 if (unit.status === `attacking_${weaponChoice.type.toLowerCase()}`) {
                                     const visualId = `${unit.instanceId}-${targetUnit.instanceId}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
@@ -592,23 +574,30 @@ function GameplayContent() {
 
                                     if (targetDef) {
                                         const damageResult = calculateDamage( unitDef, weaponChoice.type, targetDef, unit.orientation, targetUnit.orientation, targetUnit.position, unit.position );
-                                        // console.log(`${unit.name} attacks ${targetUnit.name} with ${weaponChoice.type} for ${damageResult.damageDealt} damage.`);
+                                        console.log(`[Damage] ${unit.name} attacks ${targetUnit.name} with ${weaponChoice.type} for ${damageResult.damageDealt} damage.`);
                                         const newTargetHp = Math.max(0, targetUnit.currentHp - damageResult.damageDealt);
                                         if (newTargetHp <= 0) {
-                                            updateUnitOnMap(targetUnit.instanceId, { currentHp: 0, status: 'destroyed' });
-                                            updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null, lastAttackTimeAP: undefined, lastAttackTimeHE: undefined, ...attackTimestampUpdate });
+                                            console.log(`[Damage] Unit ${targetUnit.name} (${targetUnit.instanceId.slice(-4)}) HP reached 0. Setting status to 'destroyed'. Owner: ${targetUnit.owner}, Current HP: ${targetUnit.currentHp}`);
+                                            const targetUnitIndex = unitsToProcess.findIndex(u => u.instanceId === targetUnit.instanceId);
+                                            if (targetUnitIndex !== -1) {
+                                                unitsToProcess[targetUnitIndex] = { ...targetUnit, currentHp: 0, status: 'destroyed' };
+                                            }
+                                            unitsToProcess[index] = { ...unit, status: 'idle', attackTargetInstanceId: null, lastAttackTimeAP: undefined, lastAttackTimeHE: undefined, ...attackTimestampUpdate };
                                         } else {
-                                            updateUnitOnMap(targetUnit.instanceId, { currentHp: newTargetHp, justHit: true, hitTimestamp: currentTime });
-                                            updateUnitOnMap(unit.instanceId, { status: weaponChoice.type === 'HE' ? 'reloading_he' : 'reloading_ap', [weaponChoice.type === 'HE' ? 'lastAttackTimeHE' : 'lastAttackTimeAP']: currentTime, ...attackTimestampUpdate });
+                                            const targetUnitIndex = unitsToProcess.findIndex(u => u.instanceId === targetUnit.instanceId);
+                                            if (targetUnitIndex !== -1) {
+                                                unitsToProcess[targetUnitIndex] = { ...targetUnit, currentHp: newTargetHp, justHit: true, hitTimestamp: currentTime };
+                                            }
+                                            unitsToProcess[index] = { ...unit, status: weaponChoice.type === 'HE' ? 'reloading_he' : 'reloading_ap', [weaponChoice.type === 'HE' ? 'lastAttackTimeHE' : 'lastAttackTimeAP']: currentTime, ...attackTimestampUpdate };
                                         }
                                     } else {
-                                        updateUnitOnMap(unit.instanceId, { status: 'idle', attackTargetInstanceId: null, ...attackTimestampUpdate });
+                                        unitsToProcess[index] = { ...unit, status: 'idle', attackTargetInstanceId: null, ...attackTimestampUpdate };
                                     }
                                 } else if (unit.status === 'aiming' || unit.status === `reloading_${weaponChoice.type.toLowerCase()}`) {
                                     const attackIntervalMs = weaponChoice.stats.attackInterval * 1000;
                                     const lastAttackTime = weaponChoice.type === 'HE' ? unit.lastAttackTimeHE : unit.lastAttackTimeAP;
                                     if (!lastAttackTime || currentTime - lastAttackTime >= attackIntervalMs) {
-                                        updateUnitOnMap(unit.instanceId, { status: weaponChoice.type === 'HE' ? 'attacking_he' : 'attacking_ap' });
+                                        unitsToProcess[index] = { ...unit, status: weaponChoice.type === 'HE' ? 'attacking_he' : 'attacking_ap' };
                                     }
                                 }
                             }
@@ -617,12 +606,10 @@ function GameplayContent() {
                 }
             }
 
-            // --- UNIT PRODUCTION LOGIC ---
             if (unitDef.isCommander && unit.productionQueue) {
                 const newTimeLeftMs = unit.productionQueue.timeLeftMs - gameTickRate;
 
                 if (newTimeLeftMs <= 0) {
-                    // Production complete
                     const producedUnitId = unit.productionQueue.unitIdToProduce;
                     const producedUnitDef = UNITS_MAP.get(producedUnitId);
                     const productionOriginalCost = unit.productionQueue.productionCost;
@@ -630,10 +617,9 @@ function GameplayContent() {
                     if (producedUnitDef) {
                         let spawnPosition: { x: number; y: number } | null = null;
                         const commanderAxial = logicalToAxial(unit.position.x, unit.position.y);
-                        const potentialSpawnOffsets = [ // Prioritize closer hexes
+                        const potentialSpawnOffsets = [
                             { q: 1, r: 0 }, { q: -1, r: 0 }, { q: 0, r: 1 }, { q: 0, r: -1 }, 
                             { q: 1, r: -1 }, { q: -1, r: 1 },
-                            // Slightly further if needed
                             { q: 2, r: 0 }, { q: -2, r: 0 }, { q: 0, r: 2 }, { q: 0, r: -2 },
                             { q: 1, r: 1 }, { q: -1, r: -1 }, { q: 2, r: -1 }, { q: -2, r: 1 },
                             { q: 1, r: -2 }, { q: -1, r: 2 }, { q: 2, r: -2 }, { q: -2, r: 2 },
@@ -651,7 +637,7 @@ function GameplayContent() {
                             }
 
                             const hexData = currentMapDataForLoop?.hexes?.[hexKey];
-                            const isOccupied = currentUnitsFromStore.some(
+                            const isOccupied = unitsToProcess.some( // unitsToProcess を使用
                                 u => u.position.x === spawnLogical.x && u.position.y === spawnLogical.y && u.status !== 'destroyed'
                             );
 
@@ -677,8 +663,7 @@ function GameplayContent() {
                                 lastSuccessfulAttackTimestamp: undefined, justHit: false, hitTimestamp: undefined, 
                                 productionQueue: null,
                             };
-                            addUnitToMapAction(newUnitInstance);
-                            // console.log(`[Production] ${unit.owner} commander ${unit.name} produced ${producedUnitDef.name} at (${spawnPosition.x.toFixed(1)}, ${spawnPosition.y.toFixed(1)})`);
+                            unitsToProcess.push(newUnitInstance); // 直接追加
                         } else {
                             console.warn(`[Production] Could not find valid spawn location for ${producedUnitDef.name} by ${unit.name} (${unit.owner}). Refunding cost ${productionOriginalCost}.`);
                             if (unit.owner === 'player') {
@@ -695,24 +680,20 @@ function GameplayContent() {
                             addEnemyResourcesAction(productionOriginalCost);
                         }
                     }
-                    clearCommanderProductionQueueAction(unit.instanceId);
+                    unitsToProcess[index] = { ...unit, productionQueue: null }; // 直接更新
                 } else {
                     const updatedQueue = { ...unit.productionQueue, timeLeftMs: newTimeLeftMs };
-                    updateUnitOnMap(unit.instanceId, { productionQueue: updatedQueue, status: 'producing' });
+                    unitsToProcess[index] = { ...unit, productionQueue: updatedQueue, status: 'producing' }; // 直接更新
                 }
             }
 
-            // --- AI ACTION DECISION AND EXECUTION ---
             if (unit.owner === 'enemy' && !currentGameOverMsg) {
-                // AI should only act if not currently in a blocking state (like turning for an attack, or mid-attack animation)
-                // Or if its current action is interruptible by a new AI decision.
-                // For simplicity, let AI re-evaluate if idle, moving (and interruptible), or finished producing.
                 if (unit.status === 'idle' || unit.status === 'moving' || (unitDef.isCommander && !unit.productionQueue && unit.status !== 'producing') ) {
                     const aiDifficulty = useGameSettingsStore.getState().aiDifficulty;
-                    const allUnitsCurrent = useGameSettingsStore.getState().allUnitsOnMap; 
+                    const allUnitsCurrent = unitsToProcess; // unitsToProcess を使用
                     const currentEnemyRes = useGameSettingsStore.getState().enemyResources;
                     const currentMap = useGameSettingsStore.getState().currentMapDataState;
-                    const gameTime = useGameSettingsStore.getState().gameTimeElapsed; // Get gameTimeElapsed
+                    const gameTime = useGameSettingsStore.getState().gameTimeElapsed;
 
                     let action: AIAction | null = null;
                     if (unitDef.isCommander && !unit.productionQueue) { 
@@ -722,45 +703,40 @@ function GameplayContent() {
                     }
 
                     if (action) {
-                        // console.log(`AI Action for ${unit.name} (${unit.instanceId.slice(-4)}): ${action.type}`, action.details);
                         switch (action.type) {
                             case 'MOVE':
-                                // Prevent AI from spamming move if already moving to same target or pathing
                                 if (!unit.isMoving || 
                                     (unit.moveTargetPosition?.x !== action.targetPosition.x || unit.moveTargetPosition?.y !== action.targetPosition.y)) {
-                                    updateUnitOnMap(unit.instanceId, { attackTargetInstanceId: null }); // Clear attack target if moving
+                                    unitsToProcess[index] = { ...unit, attackTargetInstanceId: null }; // 直接更新
                                     initiateMove(unit, action.targetPosition.x, action.targetPosition.y);
                                 }
                                 break;
                             case 'ATTACK':
                                 const targetUnit = allUnitsCurrent.find(u => u.instanceId === action.attackTargetInstanceId);
-                                if (targetUnit && unit.attackTargetInstanceId !== targetUnit.instanceId) { // Only issue new attack if target is different
+                                if (targetUnit && unit.attackTargetInstanceId !== targetUnit.instanceId) {
                                     const dx = targetUnit.position.x - unit.position.x;
                                     const dy = targetUnit.position.y - unit.position.y;
                                     let newTargetOrientationDeg = unit.orientation;
                                     if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
                                         newTargetOrientationDeg = (Math.atan2(dy, dx) * (180 / Math.PI) + 360) % 360;
                                     }
-                                    updateUnitOnMap(unit.instanceId, {
+                                    unitsToProcess[index] = {
+                                        ...unit,
                                         attackTargetInstanceId: targetUnit.instanceId,
                                         status: 'aiming', 
                                         isMoving: false, currentPath: null, moveTargetPosition: null,
                                         targetOrientation: newTargetOrientationDeg,
                                         isTurning: Math.abs(newTargetOrientationDeg - unit.orientation) > 1 && !!unitDef.stats.turnSpeed,
-                                    });
+                                    };
                                 }
                                 break;
                             case 'PRODUCE':
-                                // startUnitProductionAction already checks if commander is producing
                                 const { success } = startUnitProductionAction(unit.instanceId, action.unitIdToProduce, 'enemy');
-                                // if (success) console.log(`AI ${unit.name} started producing ${action.unitIdToProduce}`);
-                                // else console.warn(`AI ${unit.name} failed to produce ${action.unitIdToProduce}`);
                                 break;
                             case 'IDLE':
-                            case 'CAPTURE': // CAPTURE action also just means unit should be on the point, handled by main loop
-                                // If AI decides to idle, ensure it's not stuck in a non-idle state without a target
+                            case 'CAPTURE':
                                 if (unit.status !== 'idle' && !unit.attackTargetInstanceId && !unit.isMoving && !unit.isTurning && !unit.productionQueue) {
-                                   updateUnitOnMap(unit.instanceId, { status: 'idle' });
+                                   unitsToProcess[index] = { ...unit, status: 'idle' }; // 直接更新
                                 }
                                 break;
                         }
@@ -768,21 +744,29 @@ function GameplayContent() {
                 }
             }
 
-        }); // End of currentUnitsFromStore.forEach
+        });
 
-        if (currentAliveUnits.length !== currentUnitsFromStore.length) {
-            setAllUnitsOnMapDirectly(currentAliveUnits);
-        }
+        // 最後に、変更されたユニットリストをストアにコミット
+        setAllUnitsOnMapDirectly(unitsToProcess);
 
         if (!currentGameOverMsg) {
-            // 司令官が破壊されたかどうかのチェック
-            // プレイヤーの司令官が全て破壊された場合
-            if (playerCommandersAlive === 0) {
-                // プレイヤーの司令官が全て破壊された場合
+            // 司令官が破壊されたかどうかの最終チェック
+            let finalPlayerCommandersAlive = 0;
+            let finalEnemyCommandersAlive = 0;
+
+            unitsToProcess.filter(u => u.status !== 'destroyed').forEach(unit => { // 更新されたリストに対して計算
+                const unitDef = UNITS_MAP.get(unit.unitId);
+                if (unitDef?.isCommander) {
+                    if (unit.owner === 'player') finalPlayerCommandersAlive++;
+                    else if (unit.owner === 'enemy') finalEnemyCommandersAlive++;
+                }
+            });
+            console.log(`[Game Tick] Final Player Commanders Alive: ${finalPlayerCommandersAlive}, Final Enemy Commanders Alive: ${finalEnemyCommandersAlive}`);
+
+            if (finalPlayerCommandersAlive === 0) {
                 setGameOver("Enemy Wins! (Player Commander Lost)");
             } 
-            // 敵の司令官が全て破壊された場合
-            else if (enemyCommandersAlive === 0) {
+            else if (finalEnemyCommandersAlive === 0) {
                 setGameOver("Player Wins! (Enemy Commander Lost)");
             }
         }
