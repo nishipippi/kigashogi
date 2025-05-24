@@ -53,7 +53,6 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
 
   // attackingPairs の変更を監視し、新しいエフェクトを追加
   useEffect(() => {
-    console.log("attackingPairs updated:", attackingPairs);
     if (attackingPairs.length > 0) {
       const newEffects: BulletEffect[] = [];
       attackingPairs.forEach(pair => {
@@ -70,7 +69,6 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
           // 既に存在するエフェクトかチェック (visualIdで判定)
           const existingEffect = bulletEffects.find(effect => effect.id === pair.visualId);
           if (!existingEffect) {
-            console.log(`Adding new bullet effect: ${pair.visualId}`);
             newEffects.push({
               id: pair.visualId,
               startX: attackerCenterPx.x,
@@ -97,7 +95,6 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
         const progress = Math.min(elapsed / effect.duration, 1); // 0から1にクランプ
 
         if (progress >= 1) {
-          console.log(`Bullet effect finished: ${effect.id}`);
           return null; // アニメーション終了
         }
 
@@ -115,13 +112,11 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
 
   useEffect(() => {
     if (bulletEffects.length > 0 && animationFrameId.current === null) {
-      console.log("Starting bullet animation loop.");
       animationFrameId.current = requestAnimationFrame(animateBullets);
     }
 
     return () => {
       if (animationFrameId.current) {
-        console.log("Cleaning up bullet animation loop.");
         cancelAnimationFrame(animationFrameId.current);
         animationFrameId.current = null;
       }
@@ -348,8 +343,6 @@ const GameplayHexGrid: React.FC<GameplayHexGridProps> = ({
               const currentY = effect.startY + (effect.endY - effect.startY) * progress;
 
               const bulletColor = effect.weaponType === 'AP' ? "rgb(255, 200, 0)" : "rgb(255, 0, 0)"; // APは黄色、HEは赤
-
-              console.log(`Drawing bullet ${effect.id} at (${currentX}, ${currentY}) with progress ${progress}`);
 
               return (
                 <circle
